@@ -1,39 +1,73 @@
-import { type NextRequest, NextResponse } from "next/server"
+import { type NextRequest, NextResponse } from "next/server";
+import { supabaseAdmin } from "@/lib/supabase-admin";
+import { stripe } from "@/lib/stripe";
 
+/**
+ * ?user_id= または ?email= を受けて current_plan を返す最小API
+ * 本番はサーバー側セッションから user_id を取得してください。
+ */
 export async function GET(request: NextRequest) {
   try {
-    const { searchParams } = new URL(request.url)
-    const email = searchParams.get("email")
+    const { searchParams } = new URL(request.url);
+    const userId = searchParams.get("user_id");
+    const email = searchParams.get("email");
 
-    if (!email) {
-      return NextResponse.json({ error: "メールアドレスが必要です" }, { status: 400 })
+    if (!userId && !email) {
+      return new NextResponse("user_id or email is required", { status: 400 });
     }
 
-    // TODO: 実際の実装では以下を行う
-    // 1. メールアドレスでユーザーを検索
-    // 2. ユーザーのサブスクリプション情報をデータベースから取得
-    // 3. Stripeのサブスクリプション状態と同期
+    // まず email -> user_id を解決（メール優先の仕様）
+    let effectiveUserId = userId as string | null;
+    let resolvedEmail = email as string | null;
+    if (!effectiveUserId && email) {
+      try {
+        const { data, error } = await supabaseAdmin.auth.admin.getUserByEmail(
+          email
+        );
+        if (error || !data?.user) {
+          return NextResponse.json({ current_plan: null, email });
+        }
+        effectiveUserId = data.user.id;
+        resolvedEmail = data.user.email ?? email;
+      } catch {
+        return NextResponse.json({ current_plan: null, email });
+      }
+    }
 
-    // 現在はモックデータを返す（デモ用）
-    // メールアドレスに応じて異なるプランを返すシミュレーション
-    const mockPlans = ["lite", "business", null] as const
-    let mockPlan: (typeof mockPlans)[number]
+    // DB から stripe_customer_id, current_plan を user_id で取得
+    let row:
+      | {
+          stripe_customer_id: string | null;
+          current_plan: any;
+          email: string | null;
+        }
+      | null = null;
+    if (effectiveUserId) {
+      const { data, error } = await supabaseAdmin
+        .from("user_stripe")
+        .select("stripe_customer_id, current_plan, email")
+        .eq("user_id", effectiveUserId)
+        .single();
+      if (error) {
+        // user_stripe に未作成の場合も null 返却
+        return NextResponse.json({ current_plan: null, email: resolvedEmail });
+      }
+      row = data;
+    }
 
-    // メールアドレスのハッシュ値でプランを決定（デモ用）
-    const emailHash = email.split("").reduce((a, b) => {
-      a = (a << 5) - a + b.charCodeAt(0)
-      return a & a
-    }, 0)
-
-    const planIndex = Math.abs(emailHash) % mockPlans.length
-    mockPlan = mockPlans[planIndex]
+    if (!row?.stripe_customer_id) {
+      return NextResponse.json({ current_plan: null, email: resolvedEmail });
+    }
 
     return NextResponse.json({
-      current_plan: mockPlan,
-      email: email,
-    })
+      current_plan: row.current_plan ?? null,
+      email: resolvedEmail ?? row.email ?? null,
+    });
   } catch (error) {
-    console.error("Subscription API error:", error)
-    return NextResponse.json({ error: "サブスクリプション情報の取得に失敗しました" }, { status: 500 })
+    console.error("Subscription API error:", error);
+    return NextResponse.json(
+      { error: "サブスクリプション情報の取得に失敗しました" },
+      { status: 500 }
+    );
   }
 }

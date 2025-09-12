@@ -1,48 +1,87 @@
-import { type NextRequest, NextResponse } from "next/server"
+import { type NextRequest, NextResponse } from "next/server";
+import { stripe } from "@/lib/stripe";
+import { supabaseAdmin } from "@/lib/supabase-admin";
 
-// Stripe Billing Portal URL生成API
+/**
+ * 前提：アプリ側でユーザーの user_id を特定できる（Auth セッション）
+ * 互換性のため、クエリ ?user_id= または ?email= を許容。
+ * 本番はサーバー側でセッションから user_id を取得してください。
+ */
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json()
-    const { return_url } = body
+    const { searchParams } = new URL(request.url);
+    const userId = searchParams.get("user_id");
+    const emailParam = searchParams.get("email");
 
-    // TODO: 実際の実装では以下を行う
-    // 1. Supabase Authからユーザー情報を取得
-    // 2. ユーザーのStripe Customer IDを取得
-    // 3. Stripe APIを使ってBilling Portal Sessionを作成
-    // 4. Portal URLを返す
+    // 既存のクライアント実装互換: JSON body から return_url を受け取る
+    let returnUrl: string | undefined;
+    let emailFromBody: string | undefined;
+    try {
+      const body = await request.json();
+      returnUrl = body?.return_url as string | undefined;
+      emailFromBody = body?.email as string | undefined;
+    } catch {}
 
-    // 現在はモック実装（デモ用）
-    // 実際のStripe統合時は以下のようなコードになる：
-    /*
-    const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY)
-    
+    const email = emailParam || emailFromBody || undefined;
+
+    // ID特定がない場合は、従来のモックURLを返す（デモ互換）
+    if (!userId && !email) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      const mockPortalUrl =
+        "https://billing.stripe.com/p/session/test_mock_session_id";
+      return NextResponse.json({ url: mockPortalUrl });
+    }
+
+    // Supabase から顧客IDを取得
+    let row: { stripe_customer_id: string; email: string } | null = null;
+    if (userId) {
+      const { data, error } = await supabaseAdmin
+        .from("user_stripe")
+        .select("stripe_customer_id, email")
+        .eq("user_id", userId)
+        .single();
+      if (error) throw error;
+      row = data;
+    } else if (email) {
+      // メールから user_id を解決し、user_id をキーに取得
+      const { data: userData, error: userErr } =
+        await supabaseAdmin.auth.admin.getUserByEmail(email);
+      if (userErr || !userData?.user?.id) {
+        return new NextResponse("User not found for email", { status: 404 });
+      }
+      const resolvedUserId = userData.user.id;
+      const { data, error } = await supabaseAdmin
+        .from("user_stripe")
+        .select("stripe_customer_id, email")
+        .eq("user_id", resolvedUserId)
+        .single();
+      if (error) throw error;
+      row = data;
+    }
+
+    if (!row?.stripe_customer_id) {
+      return new NextResponse("Stripe customer not found", { status: 404 });
+    }
+
+    const defaultReturn = `${
+      process.env.NEXT_PUBLIC_APP_URL ||
+      process.env.NEXT_PUBLIC_BASE_URL ||
+      "https://your-app.example"
+    }/mypage`;
     const session = await stripe.billingPortal.sessions.create({
-      customer: customerStripeId, // ユーザーのStripe Customer ID
-      return_url: return_url || `${process.env.NEXT_PUBLIC_APP_URL}/mypage`,
-    })
-    
-    return NextResponse.json({ url: session.url })
-    */
+      customer: row.stripe_customer_id,
+      return_url: returnUrl || defaultReturn,
+    });
 
-    // モック：3秒後にダミーURLを返す（実際のStripeポータルのような動作をシミュレート）
-    await new Promise((resolve) => setTimeout(resolve, 1000))
-
-    // 実際の環境では、これはStripe Billing PortalのURLになる
-    const mockPortalUrl = "https://billing.stripe.com/p/session/test_mock_session_id"
-
-    return NextResponse.json({
-      url: mockPortalUrl,
-    })
+    return NextResponse.json({ url: session.url });
   } catch (error) {
-    console.error("Stripe portal API error:", error)
-
+    console.error("Stripe portal API error:", error);
     return NextResponse.json(
       {
         error: "ポータルURLの生成に失敗しました",
         message: error instanceof Error ? error.message : "不明なエラー",
       },
-      { status: 500 },
-    )
+      { status: 500 }
+    );
   }
 }

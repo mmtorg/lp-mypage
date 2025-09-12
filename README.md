@@ -24,7 +24,9 @@ app/mypage/
 
 app/api/
 ├── me/subscription/route.ts    # サブスクリプション情報取得API
-└── stripe/portal/route.ts      # Stripeポータル作成API
+└── stripe/
+    ├── portal/route.ts         # Stripeポータル作成API
+    └── webhook/route.ts        # Stripe Webhook受信エンドポイント
 
 lib/
 ├── types.ts                    # 型定義
@@ -49,9 +51,13 @@ STRIPE_SECRET_KEY=sk_live_or_test_your_stripe_secret_key
 STRIPE_WEBHOOK_SECRET=whsec_your_webhook_secret
 
 # 必須: Supabase設定
+# クライアント(ブラウザ)で使う公開鍵
 NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
+# サーバーで使うService Role (Webhook/管理処理)
 SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
+# 任意: サーバー側の明示的URL (無い場合はNEXT_PUBLIC_を流用)
+# SUPABASE_URL=https://your-project.supabase.co
 
 # オプション: アプリケーションURL
 NEXT_PUBLIC_APP_URL=https://your-domain.com
@@ -86,9 +92,12 @@ NEXT_PUBLIC_APP_URL=https://your-domain.com
 
 ## 開発・デバッグ
 
-現在はモックAPIを使用しているため、以下で動作確認できます：
+## Stripe Webhook設定
 
-- `/api/me/subscription`: ランダムなプラン状態を返す
-- `/api/stripe/portal`: モックのポータルURLを返す
+- エンドポイント: `/api/stripe/webhook`
+- イベント: `checkout.session.completed`, `customer.subscription.*`
+- Vercel ダッシュボードで Webhook を Stripe 連携に追加してください。
 
-実際のStripe統合時は、これらのAPIを実装に置き換えてください。
+## Supabase スキーマ
+
+- SQLは `supabase/schema.sql` に配置しています。必要に応じてコピーして適用してください。

@@ -1,19 +1,23 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { stripe } from "@/lib/stripe";
-import { supabaseAdmin } from "@/lib/supabase-admin";
+import { supabaseAdmin, getUserIdByEmail } from "@/lib/supabase-admin";
+import { getSupabaseServer } from "@/lib/supabase-server";
 
 /**
- * 前提：アプリ側でユーザーの user_id を特定できる（Auth セッション）
- * 互換性のため、クエリ ?user_id= または ?email= を許容。
- * 本番はサーバー側でセッションから user_id を取得してください。
+ * セッションの user_id を最優先で使用し、互換として ?user_id= / ?email= も許容
  */
 export async function POST(request: NextRequest) {
   try {
-    const { searchParams } = new URL(request.url);
-    const userId = searchParams.get("user_id");
-    const emailParam = searchParams.get("email");
+    const supabase = getSupabaseServer();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
 
-    // 既存のクライアント実装互換: JSON body から return_url を受け取る
+    const { searchParams } = new URL(request.url);
+    const qpUserId = searchParams.get("user_id");
+    const qpEmail = searchParams.get("email");
+
+    // 既存互換: JSON body から return_url, email を受け取り可能
     let returnUrl: string | undefined;
     let emailFromBody: string | undefined;
     try {
@@ -22,44 +26,90 @@ export async function POST(request: NextRequest) {
       emailFromBody = body?.email as string | undefined;
     } catch {}
 
-    const email = emailParam || emailFromBody || undefined;
+    const email = qpEmail || emailFromBody || undefined;
 
-    // ID特定がない場合は、従来のモックURLを返す（デモ互換）
-    if (!userId && !email) {
+    // 1) セッション優先
+    let effectiveUserId: string | null = user?.id ?? null;
+
+    // 2) セッションが無い場合のみ、クエリフォールバック
+    if (!effectiveUserId) {
+      if (qpUserId) effectiveUserId = qpUserId;
+      if (!effectiveUserId && email) {
+        const uid = await getUserIdByEmail(email);
+        if (uid) effectiveUserId = uid;
+      }
+    }
+
+    // セッションもフォールバックも無い場合はデモ互換モックURL
+    if (!effectiveUserId) {
       await new Promise((resolve) => setTimeout(resolve, 1000));
       const mockPortalUrl =
         "https://billing.stripe.com/p/session/test_mock_session_id";
       return NextResponse.json({ url: mockPortalUrl });
     }
 
-    // Supabase から顧客IDを取得
-    let row: { stripe_customer_id: string; email: string } | null = null;
-    if (userId) {
-      const { data, error } = await supabaseAdmin
+    // 顧客ID取得（user_id キー）
+    let stripeCustomerId: string | undefined;
+    let knownEmail: string | undefined;
+    if (effectiveUserId) {
+      const { data: byUser, error: byUserErr } = await supabaseAdmin
         .from("user_stripe")
         .select("stripe_customer_id, email")
-        .eq("user_id", userId)
-        .single();
-      if (error) throw error;
-      row = data;
-    } else if (email) {
-      // メールから user_id を解決し、user_id をキーに取得
-      const { data: userData, error: userErr } =
-        await supabaseAdmin.auth.admin.getUserByEmail(email);
-      if (userErr || !userData?.user?.id) {
-        return new NextResponse("User not found for email", { status: 404 });
-      }
-      const resolvedUserId = userData.user.id;
-      const { data, error } = await supabaseAdmin
-        .from("user_stripe")
-        .select("stripe_customer_id, email")
-        .eq("user_id", resolvedUserId)
-        .single();
-      if (error) throw error;
-      row = data;
+        .eq("user_id", effectiveUserId)
+        .maybeSingle();
+      if (byUserErr) console.warn("/portal: user_stripe by user_id error", byUserErr);
+      stripeCustomerId = byUser?.stripe_customer_id ?? undefined;
+      knownEmail = byUser?.email ?? undefined;
     }
 
-    if (!row?.stripe_customer_id) {
+    // フォールバック: email で user_stripe を検索
+    if (!stripeCustomerId && email) {
+      const { data: byEmail, error: byEmailErr } = await supabaseAdmin
+        .from("user_stripe")
+        .select("stripe_customer_id, email, user_id")
+        .eq("email", email)
+        .maybeSingle();
+      if (byEmailErr) console.warn("/portal: user_stripe by email error", byEmailErr);
+      stripeCustomerId = byEmail?.stripe_customer_id ?? stripeCustomerId;
+      knownEmail = byEmail?.email ?? knownEmail;
+      // ユーザーIDが確定しており、customerが取得できた場合はリンクを補完
+      if (!effectiveUserId && byEmail?.user_id) {
+        effectiveUserId = byEmail.user_id;
+      }
+    }
+
+    // さらにフォールバック: Stripe上で顧客検索（メール必須）
+    if (!stripeCustomerId && (email || knownEmail)) {
+      try {
+        const targetEmail = email || knownEmail!;
+        const found = await stripe.customers.search({
+          query: `email:'${targetEmail.replace(/'/g, " ")}'`,
+          limit: 1,
+        });
+        const c = found.data?.[0];
+        if (c?.id) {
+          stripeCustomerId = c.id;
+          // user_id があり、まだリンクされていなければ保存（冪等）
+          if (effectiveUserId) {
+            await supabaseAdmin
+              .from("user_stripe")
+              .upsert(
+                {
+                  user_id: effectiveUserId,
+                  email: targetEmail,
+                  stripe_customer_id: stripeCustomerId,
+                  updated_at: new Date().toISOString(),
+                },
+                { onConflict: "user_id" }
+              );
+          }
+        }
+      } catch (e) {
+        console.warn("/portal: stripe customer search failed", e);
+      }
+    }
+
+    if (!stripeCustomerId) {
       return new NextResponse("Stripe customer not found", { status: 404 });
     }
 
@@ -69,7 +119,7 @@ export async function POST(request: NextRequest) {
       "https://your-app.example"
     }/mypage`;
     const session = await stripe.billingPortal.sessions.create({
-      customer: row.stripe_customer_id,
+      customer: stripeCustomerId,
       return_url: returnUrl || defaultReturn,
     });
 

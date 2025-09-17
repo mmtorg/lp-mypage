@@ -18,3 +18,35 @@ export const supabaseAdmin = createClient(
   { auth: { persistSession: false } }
 );
 
+// Helper: fetch user_id by email via GoTrue Admin REST API
+export async function getUserIdByEmail(email: string): Promise<string | null> {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) return null;
+  try {
+    const base = SUPABASE_URL.replace(/\/$/, "");
+    const url = `${base}/auth/v1/admin/users?email=${encodeURIComponent(email)}`;
+    const res = await fetch(url, {
+      headers: {
+        apikey: SUPABASE_SERVICE_ROLE_KEY,
+        Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+      },
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    // Accept several possible shapes
+    const candidates = Array.isArray(json)
+      ? json
+      : Array.isArray((json as any).users)
+      ? (json as any).users
+      : (json as any).user
+      ? [(json as any).user]
+      : [];
+    const found = candidates.find(
+      (u: any) => typeof u?.email === "string" && u.email.toLowerCase() === email.toLowerCase()
+    );
+    return found?.id ?? null;
+  } catch (e) {
+    console.warn("getUserIdByEmail failed:", e);
+    return null;
+  }
+}

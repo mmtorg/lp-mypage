@@ -1,6 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/supabase-admin";
-import { stripe } from "@/lib/stripe";
+import { supabaseAdmin, getUserIdByEmail } from "@/lib/supabase-admin";
+import { getSupabaseServer } from "@/lib/supabase-server";
 
 /**
  * ?user_id= または ?email= を受けて current_plan を返す最小API
@@ -8,60 +8,63 @@ import { stripe } from "@/lib/stripe";
  */
 export async function GET(request: NextRequest) {
   try {
+    const supabase = getSupabaseServer();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
     const { searchParams } = new URL(request.url);
-    const userId = searchParams.get("user_id");
-    const email = searchParams.get("email");
+    const qpUserId = searchParams.get("user_id");
+    const qpEmail = searchParams.get("email");
 
-    if (!userId && !email) {
-      return new NextResponse("user_id or email is required", { status: 400 });
-    }
+    // 1) セッション優先
+    let effectiveUserId: string | null = user?.id ?? null;
+    let resolvedEmail: string | null = user?.email ?? null;
 
-    // まず email -> user_id を解決（メール優先の仕様）
-    let effectiveUserId = userId as string | null;
-    let resolvedEmail = email as string | null;
-    if (!effectiveUserId && email) {
-      try {
-        const { data, error } = await supabaseAdmin.auth.admin.getUserByEmail(
-          email
-        );
-        if (error || !data?.user) {
-          return NextResponse.json({ current_plan: null, email });
+    // 2) セッションが無い場合のみ、クエリにフォールバック
+    if (!effectiveUserId) {
+      if (qpUserId) effectiveUserId = qpUserId;
+      if (!effectiveUserId && qpEmail) {
+        // Try resolving user_id via Admin REST; fallback to email lookup in user_stripe
+        const uid = await getUserIdByEmail(qpEmail).catch(() => null);
+        if (uid) {
+          effectiveUserId = uid;
+          resolvedEmail = qpEmail;
+        } else {
+          // No user_id, try querying by email directly
+          const { data } = await supabaseAdmin
+            .from("user_stripe")
+            .select("current_plan, email")
+            .eq("email", qpEmail)
+            .maybeSingle();
+          return NextResponse.json({
+            current_plan: data?.current_plan ?? null,
+            email: data?.email ?? qpEmail,
+          });
         }
-        effectiveUserId = data.user.id;
-        resolvedEmail = data.user.email ?? email;
-      } catch {
-        return NextResponse.json({ current_plan: null, email });
       }
     }
 
-    // DB から stripe_customer_id, current_plan を user_id で取得
-    let row:
-      | {
-          stripe_customer_id: string | null;
-          current_plan: any;
-          email: string | null;
-        }
-      | null = null;
-    if (effectiveUserId) {
-      const { data, error } = await supabaseAdmin
-        .from("user_stripe")
-        .select("stripe_customer_id, current_plan, email")
-        .eq("user_id", effectiveUserId)
-        .single();
-      if (error) {
-        // user_stripe に未作成の場合も null 返却
-        return NextResponse.json({ current_plan: null, email: resolvedEmail });
-      }
-      row = data;
+    if (!effectiveUserId) {
+      return new NextResponse("Unauthorized", { status: 401 });
     }
 
-    if (!row?.stripe_customer_id) {
-      return NextResponse.json({ current_plan: null, email: resolvedEmail });
+    const { data, error } = await supabaseAdmin
+      .from("user_stripe")
+      .select("stripe_customer_id, current_plan, email")
+      .eq("user_id", effectiveUserId)
+      .single();
+
+    if (error || !data?.stripe_customer_id) {
+      return NextResponse.json({
+        current_plan: null,
+        email: resolvedEmail ?? qpEmail ?? null,
+      });
     }
 
     return NextResponse.json({
-      current_plan: row.current_plan ?? null,
-      email: resolvedEmail ?? row.email ?? null,
+      current_plan: data.current_plan ?? null,
+      email: resolvedEmail ?? data.email ?? null,
     });
   } catch (error) {
     console.error("Subscription API error:", error);

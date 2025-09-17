@@ -5,13 +5,13 @@ export const PLAN_DISPLAY_NAMES = {
   lite: "Lite",
   business: "Business",
   null: "未契約",
-} as const
+} as const;
 
 // プラン説明文
 export const PLAN_DESCRIPTIONS = {
   lite: "基本機能をお手軽にご利用いただけるプランです",
   business: "高度な機能で業務効率化を実現するプランです",
-} as const
+} as const;
 
 // UI表示用のテキスト定数
 export const UI_TEXTS = {
@@ -30,12 +30,13 @@ export const UI_TEXTS = {
   BUSINESS_MONTHLY_BUTTON: "Business（月額）に申し込む",
   BUSINESS_YEARLY_BUTTON: "Business（年額）に申し込む",
   ADD_SEATS_BUTTON: "配信先を追加（人数を指定）",
-  PORTAL_BUTTON: "解約・請求情報の確認（Stripeポータル）",
+  PORTAL_BUTTON: "請求情報の確認・解約へ進む",
 
   // 注意事項
   SEATS_NOTICE:
     "配信先の登録は、決済後に表示されるフォームからメールアドレスを1件ずつご登録ください。購入人数＝送信回数です。",
-  PORTAL_NOTICE: "解約や請求情報の確認・変更はStripeのカスタマーポータルから行えます。",
+  PORTAL_NOTICE:
+    "解約や請求情報の確認・変更はStripeのカスタマーポータルから行えます。",
 
   // エラーメッセージ
   SUBSCRIPTION_FETCH_ERROR: "サブスクリプション情報の取得に失敗しました",
@@ -44,11 +45,11 @@ export const UI_TEXTS = {
 
   // ローディングメッセージ
   LOADING_SUBSCRIPTION: "プラン情報を読み込み中...",
-  LOADING_PORTAL: "ポータルを準備中...",
-} as const
+  LOADING_PORTAL: "Loading...",
+} as const;
 
 // APIエンドポイント
 export const API_ENDPOINTS = {
   SUBSCRIPTION: "/api/me/subscription",
   STRIPE_PORTAL: "/api/stripe/portal",
-} as const
+} as const;

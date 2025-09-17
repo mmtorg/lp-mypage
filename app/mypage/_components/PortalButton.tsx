@@ -1,21 +1,22 @@
-"use client"
+"use client";
 
-import { useState } from "react"
-import { Button } from "@/components/ui/button"
-import { ExternalLink, Loader2 } from "lucide-react"
-import { useToast } from "@/hooks/use-toast"
+import { useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Loader2 } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
 
 // Stripeポータルボタンコンポーネント
-export function PortalButton() {
-  const [isLoading, setIsLoading] = useState(false)
-  const { toast } = useToast()
+export type PortalButtonProps = { email?: string };
+export function PortalButton({ email }: PortalButtonProps) {
+  const [isLoading, setIsLoading] = useState(false);
+  const { toast } = useToast();
 
   // Stripeポータルへの遷移処理
   const handlePortalRedirect = async () => {
     // 多重クリック防止
-    if (isLoading) return
+    if (isLoading) return;
 
-    setIsLoading(true)
+    setIsLoading(true);
 
     try {
       // Stripe Billing Portal URLを取得するAPIを呼び出し
@@ -27,23 +28,24 @@ export function PortalButton() {
         // 必要に応じてユーザー情報やreturn_urlを送信
         body: JSON.stringify({
           return_url: window.location.href, // 現在のページに戻る
+          email, // 非ログインでも email で解決可能
         }),
-      })
+      });
 
       if (!response.ok) {
-        throw new Error("ポータルURLの取得に失敗しました")
+        throw new Error("ポータルURLの取得に失敗しました");
       }
 
-      const data = await response.json()
+      const data = await response.json();
 
       if (!data.url) {
-        throw new Error("無効なポータルURLです")
+        throw new Error("無効なポータルURLです");
       }
 
-      // Stripe Billing Portalへリダイレクト
-      window.location.assign(data.url)
+      // 同一タブで遷移（元の挙動へ戻す）
+      window.location.assign(data.url);
     } catch (error) {
-      console.error("Portal redirect error:", error)
+      console.error("Portal redirect error:", error);
 
       // エラートーストを表示
       toast({
@@ -53,36 +55,30 @@ export function PortalButton() {
             ? error.message
             : "ポータルへの遷移に失敗しました。しばらく時間をおいて再度お試しください。",
         variant: "destructive",
-      })
+      });
 
-      setIsLoading(false)
+      setIsLoading(false);
     }
-  }
+  };
 
   return (
-    <Button
-      onClick={handlePortalRedirect}
-      disabled={isLoading}
-      variant="outline"
-      size="lg"
-      className="w-full justify-start h-auto p-4 hover:bg-gray-50 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 bg-transparent"
-      aria-label="Stripeポータルで解約・請求情報を確認"
-    >
-      <div className="flex items-center justify-between w-full">
-        <div className="text-left">
-          <div className="font-semibold text-gray-900">解約・請求情報の確認（Stripeポータル）</div>
-          <div className="text-sm text-gray-600 mt-1">
-            {isLoading ? "ポータルを準備中..." : "サブスクリプションの管理ができます"}
-          </div>
-        </div>
-
-        {/* ローディング状態のアイコン */}
+    <div className="space-y-2">
+      <Button
+        onClick={handlePortalRedirect}
+        disabled={isLoading}
+        variant="outline"
+        className="w-full h-auto p-3 justify-center text-base font-semibold rounded-lg border-2 border-gray-300 bg-white shadow-sm hover:border-gray-400 hover:shadow-md transition"
+        aria-label="請求情報を確認・解約"
+      >
         {isLoading ? (
-          <Loader2 className="h-5 w-5 animate-spin text-gray-500" />
+          <>
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            Loading...
+          </>
         ) : (
-          <ExternalLink className="h-5 w-5 text-gray-500" />
+          "請求情報の確認・解約へ進む"
         )}
-      </div>
-    </Button>
-  )
+      </Button>
+    </div>
+  );
 }

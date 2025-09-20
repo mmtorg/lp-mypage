@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -13,9 +13,38 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Loader2 } from "lucide-react";
 import { PortalButton } from "@/app/mypage/_components/PortalButton";
-import { useRouter } from "next/navigation";
+import { useToast } from "@/hooks/use-toast";
+import {
+  Dialog,
+  DialogTrigger,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogBody,
+  DialogFooter,
+  DialogClose,
+} from "@/components/ui/dialog";
+
+const MAX_ADDITIONAL_RECIPIENTS = 10;
+const SESSION_EMAIL_KEY = "mypage:lastEmail:session";
 
 type Plan = "lite" | "business" | null;
+
+type RecipientInfo = {
+  email: string;
+  created_via: "initial" | "addon" | null;
+  is_owner: boolean;
+  pending_removal?: boolean;
+};
+
+type PurchasedItem = {
+  name: string;
+  quantity: number;
+  type: "base" | "addon";
+  price_id?: string;
+  product_id?: string;
+};
 
 interface SubscriptionData {
   current_plan: Plan;
@@ -23,16 +52,63 @@ interface SubscriptionData {
   product_name?: string;
   addon_unit_amount?: number;
   addon_currency?: string;
+  recipients?: RecipientInfo[];
+  purchased_items?: PurchasedItem[];
 }
 
 export default function MyPage() {
-  const router = useRouter();
   const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sub, setSub] = useState<SubscriptionData | null>(null);
+  const [booting, setBooting] = useState(false); // セッション復元中の表示制御
+  const [hydrated, setHydrated] = useState(false); // SSRと一致させるためのハイドレーション完了フラグ
 
-  const handleCheck = async (e: React.FormEvent) => {
+  const refreshByEmail = async (targetEmail?: string) => {
+    const e = (targetEmail ?? email).trim();
+    if (!e) return;
+    try {
+      setLoading(true);
+      const res = await fetch(
+        `/api/stripe/subscription-by-email?email=${encodeURIComponent(
+          e
+        )}&force=1&_=${Date.now()}`
+      );
+      if (!res.ok) throw new Error("契約情報の取得に失敗しました");
+      const data = (await res.json()) as SubscriptionData;
+      setSub(data);
+      setError(null);
+      try {
+        sessionStorage.setItem(SESSION_EMAIL_KEY, e);
+      } catch {}
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "エラーが発生しました");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    setHydrated(true);
+    try {
+      const last = sessionStorage.getItem(SESSION_EMAIL_KEY);
+      if (last && !sub) {
+        setEmail(last);
+        setBooting(true);
+        refreshByEmail(last);
+      }
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 初回ブート中はフェッチ完了までフォームを隠す
+  useEffect(() => {
+    if (booting && !loading) {
+      setBooting(false);
+    }
+  }, [booting, loading]);
+
+  const handleCheck = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!email.trim()) return;
     setLoading(true);
@@ -41,11 +117,16 @@ export default function MyPage() {
       const res = await fetch(
         `/api/stripe/subscription-by-email?email=${encodeURIComponent(
           email.trim()
-        )}&debug=1`
+        )}`
       );
-      if (!res.ok) throw new Error("プラン情報の取得に失敗しました");
+      if (!res.ok) {
+        throw new Error("契約情報の取得に失敗しました");
+      }
       const data = (await res.json()) as SubscriptionData;
       setSub(data);
+      try {
+        sessionStorage.setItem(SESSION_EMAIL_KEY, email.trim());
+      } catch {}
     } catch (err) {
       setError(err instanceof Error ? err.message : "エラーが発生しました");
     } finally {
@@ -57,63 +138,74 @@ export default function MyPage() {
     <div className="min-h-screen bg-gray-50 py-8 px-4">
       <div className="mx-auto max-w-2xl">
         <div className="mb-8 text-center">
-          <h1 className="text-3xl font-bold text-gray-900 mb-2">マイページ</h1>
+          <h1 className="mb-2 text-3xl font-bold text-gray-900">マイページ</h1>
           <p className="text-gray-600">
-            メールアドレスでご契約状況を確認します
+            メールアドレスでご契約状況を確認できます
           </p>
         </div>
 
-        {!sub && (
-          <Card className="shadow-md border-0 rounded-2xl mb-6">
-            <CardHeader>
-              <CardTitle className="text-xl">メールアドレスを入力</CardTitle>
-              <CardDescription>
-                ご契約状況に応じて画面を表示します。
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <form onSubmit={handleCheck} className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="email">メールアドレス</Label>
-                  <Input
-                    id="email"
-                    type="email"
-                    required
-                    value={email}
-                    disabled={loading}
-                    onChange={(e) => setEmail(e.target.value)}
-                    placeholder="you@example.com"
-                    className="focus:ring-2 focus:ring-blue-500"
-                  />
+        {!sub &&
+          (!hydrated ? (
+            <div />
+          ) : booting ? (
+            <Card className="mb-6 rounded-2xl border-0 shadow-md">
+              <CardHeader>
+                <CardTitle className="text-xl">読み込み中...</CardTitle>
+                <CardDescription>ご契約情報を取得しています</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-center justify-center py-6 text-gray-600">
+                  <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                  最新の状態を読み込んでいます
                 </div>
-                {error && (
-                  <div className="text-sm text-red-600 bg-red-50 p-3 rounded-lg">
-                    {error}
+              </CardContent>
+            </Card>
+          ) : (
+            <Card className="mb-6 rounded-2xl border-0 shadow-md">
+              <CardHeader>
+                <CardTitle className="text-xl">メールアドレスを入力</CardTitle>
+                <CardDescription>
+                  ご契約状況に応じて画面を表示します
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <form onSubmit={handleCheck} className="space-y-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="email">メールアドレス</Label>
+                    <Input
+                      id="email"
+                      type="email"
+                      required
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      disabled={loading}
+                      placeholder="you@example.com"
+                      className="focus:ring-2 focus:ring-blue-500"
+                    />
                   </div>
-                )}
-                <Button
-                  type="submit"
-                  disabled={loading || !email.trim()}
-                  className="w-full"
-                >
-                  {loading ? (
-                    <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      確認中...
-                    </>
-                  ) : (
-                    "契約状況を確認"
+                  {error && (
+                    <div className="rounded-lg bg-red-50 p-3 text-sm text-red-600">
+                      {error}
+                    </div>
                   )}
-                </Button>
-                <Button asChild variant="outline" className="w-full">
-                  <a href={process.env.NEXT_PUBLIC_APP_URL || "/"}>
-                    トップページに戻る
-                  </a>
-                </Button>
-              </form>
-            </CardContent>
-          </Card>
-        )}
+                  <Button
+                    type="submit"
+                    disabled={loading || !email.trim()}
+                    className="w-full"
+                  >
+                    {loading ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        確認中...
+                      </>
+                    ) : (
+                      "契約状況を確認"
+                    )}
+                  </Button>
+                </form>
+              </CardContent>
+            </Card>
+          ))}
 
         {sub && (
           <ResolvedView
@@ -122,6 +214,8 @@ export default function MyPage() {
             productName={sub.product_name}
             addonUnitAmount={sub.addon_unit_amount}
             addonCurrency={sub.addon_currency}
+            recipients={sub.recipients}
+            purchasedItems={sub.purchased_items}
             onReset={() => setSub(null)}
           />
         )}
@@ -136,241 +230,1011 @@ type ResolvedViewProps = {
   productName?: string;
   addonUnitAmount?: number;
   addonCurrency?: string;
+  recipients?: RecipientInfo[];
+  purchasedItems?: PurchasedItem[];
   onReset: () => void;
 };
+
 function ResolvedView({
   email,
   plan,
   productName,
   addonUnitAmount,
   addonCurrency,
+  recipients,
+  purchasedItems,
   onReset,
 }: ResolvedViewProps) {
+  const { toast } = useToast();
+  const [recipientList, setRecipientList] = useState<RecipientInfo[]>(
+    recipients ?? []
+  );
+  const [currentItems, setCurrentItems] = useState<PurchasedItem[]>(
+    purchasedItems ?? []
+  );
+  const [currentProductName, setCurrentProductName] = useState<
+    string | undefined
+  >(productName);
+  const [currentAddonUnitAmount, setCurrentAddonUnitAmount] = useState<
+    number | undefined
+  >(addonUnitAmount);
+  const [currentAddonCurrency, setCurrentAddonCurrency] = useState<
+    string | undefined
+  >(addonCurrency);
+
+  useEffect(() => {
+    setRecipientList(recipients ?? []);
+  }, [recipients]);
+
+  useEffect(() => {
+    setCurrentItems(purchasedItems ?? []);
+  }, [purchasedItems]);
+
+  useEffect(() => {
+    setCurrentProductName(productName);
+  }, [productName]);
+
+  useEffect(() => {
+    setCurrentAddonUnitAmount(addonUnitAmount);
+  }, [addonUnitAmount]);
+
+  useEffect(() => {
+    setCurrentAddonCurrency(addonCurrency);
+  }, [addonCurrency]);
+
+  const sortedRecipients = useMemo(() => {
+    const unique = new Map<string, RecipientInfo>();
+    for (const recipient of recipientList) {
+      if (!recipient?.email) continue;
+      const key = recipient.email.toLowerCase();
+      const entry = unique.get(key);
+      if (!entry) {
+        unique.set(key, recipient);
+        continue;
+      }
+      unique.set(key, {
+        ...entry,
+        created_via: entry.created_via ?? recipient.created_via ?? null,
+        is_owner: entry.is_owner || recipient.is_owner,
+        pending_removal: entry.pending_removal || recipient.pending_removal,
+      });
+    }
+
+    const rank = (r: RecipientInfo) => {
+      if (r.is_owner) return 0; // 契約者
+      const via = (r.created_via ?? "").toLowerCase();
+      if (via === "addon") return 2; // 追加登録（最後）
+      return 1; // ラベル無し
+    };
+
+    return Array.from(unique.values()).sort((a, b) => {
+      const ra = rank(a);
+      const rb = rank(b);
+      if (ra !== rb) return ra - rb;
+      return a.email.localeCompare(b.email);
+    });
+  }, [recipientList]);
+
+  const addonRecipients = useMemo(
+    () =>
+      sortedRecipients.filter(
+        (recipient) =>
+          !recipient.is_owner &&
+          (recipient.created_via ?? "").toLowerCase() === "addon"
+      ),
+    [sortedRecipients]
+  );
+
+  const displayItems = currentItems.length
+    ? currentItems
+    : currentProductName
+    ? [
+        {
+          name: currentProductName,
+          quantity: 1,
+          type: "base" as const,
+        },
+      ]
+    : [];
+
+  const manageUrl =
+    process.env.NEXT_PUBLIC_STRIPE_SUBSCRIPTION_MANAGE_URL || "";
+
+  if (plan === null) {
+    return (
+      <Card className="rounded-2xl border-0 shadow-md">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-xl">
+            契約情報が見つかりませんでした
+          </CardTitle>
+          <CardDescription>{email}</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <NoSubscription />
+        </CardContent>
+      </Card>
+    );
+  }
+
   return (
-    <Card className="shadow-md border-0 rounded-2xl">
-      <CardHeader className="pb-3">
-        <div className="flex items-start justify-between">
-          <div>
-            {false && (
-            <CardTitle className="text-xl">
-              {plan === null
-                ? "購入情報がありません"
-                : productName ||
-                  (plan === "lite"
-                    ? "Liteプラン契約済み"
-                    : "Businessプラン契約済み")}
-            </CardTitle>
+    <Card className="rounded-2xl border-0 shadow-md">
+      <CardHeader className="pb-4">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="space-y-3">
+            <h3 className="border-b border-gray-200 pb-2 text-xl font-semibold text-gray-900">
+              現在の契約プラン
+            </h3>
+            {displayItems.length > 0 ? (
+              <ul className="space-y-1 text-sm text-gray-900">
+                {displayItems.map((item) => (
+                  <li
+                    key={`${item.product_id ?? item.name}-${
+                      item.price_id ?? item.name
+                    }`}
+                    className="flex items-center justify-between rounded-md bg-gray-50 px-3 py-2"
+                  >
+                    <span>{item.name}</span>
+                    <span className="text-gray-600">×{item.quantity}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-sm text-gray-600">
+                {currentProductName ||
+                  (plan === "lite" ? "Liteプラン" : "Businessプラン")}
+              </p>
             )}
-            {plan !== null && (
-              <div className="mt-1 flex items-center gap-2 font-semibold text-xl">
-                現在の契約プラン: {productName || (plan === "lite" ? "Lite：月額基本料" : "Business：月額基本料")}
-                <span className="inline-flex items-center rounded-full bg-green-50 px-3 py-1 text-xs font-medium text-green-700 ring-1 ring-inset ring-green-200">現在の契約</span>
-              </div>
-            )}
-            <CardDescription>{email}</CardDescription>
+            {/* Email hidden per request */}
           </div>
           <div className="flex items-center gap-2">
-            {false && plan !== null && (
-              <span className="inline-flex items-center rounded-full bg-green-50 px-3 py-1 text-xs font-medium text-green-700 ring-1 ring-inset ring-green-200">
-                現在の契約
-              </span>
-            )}
             <Button variant="outline" size="sm" onClick={onReset}>
               戻る
             </Button>
           </div>
         </div>
       </CardHeader>
-      <CardContent>
-        {plan === null ? (
-          <NoSubscription />
-        ) : (
-          <div className="space-y-12">
-            <div className="space-y-4">
-              <h3 className="text-xl font-semibold text-gray-900 pb-2 border-b border-gray-200">
-                配信先追加
-              </h3>
-              {typeof addonUnitAmount !== "undefined" && (
-                <div className="rounded-md bg-gray-50 p-3 text-sm text-gray-700">
-                  追加料金 (月額) :{" "}
-                  {formatCurrency(addonUnitAmount, addonCurrency)} /
-                  1メールアドレス
-                </div>
-              )}
-              <AddRecipientsSection
-                email={email}
-                plan={plan}
-                productName={productName}
-                addonUnitAmount={addonUnitAmount}
-                addonCurrency={addonCurrency}
-              />
-            </div>
+      <CardContent className="space-y-12">
+        <section className="space-y-4">
+          <h3 className="border-b border-gray-200 pb-2 text-xl font-semibold text-gray-900">
+            現在の配信先
+          </h3>
+          {sortedRecipients.length > 0 ? (
+            <ul className="space-y-2 text-gray-700">
+              {sortedRecipients.map((recipient) => (
+                <li
+                  key={recipient.email}
+                  className="flex items-center justify-between rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm"
+                >
+                  <span>
+                    {recipient.email}
+                    {recipient.pending_removal ? (
+                      <span className="ml-2 text-xs text-red-600">
+                        （削除予定）
+                      </span>
+                    ) : null}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    {recipient.is_owner && (
+                      <span className="inline-flex items-center rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700 ring-1 ring-inset ring-blue-200">
+                        契約者
+                      </span>
+                    )}
+                    {!recipient.is_owner &&
+                      (recipient.created_via ?? "").toLowerCase() ===
+                        "addon" && (
+                        <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-600 ring-1 ring-inset ring-gray-200">
+                          追加登録
+                        </span>
+                      )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-sm text-gray-600">
+              登録済みのメールアドレスはまだありません。
+            </p>
+          )}
+        </section>
 
-            <div className="space-y-4">
-              <h3 className="text-xl font-semibold text-gray-900 pb-2 border-b border-gray-200">
-                サブスクリプションの管理
-              </h3>
-              <PortalButton email={email} />
-            </div>
+        <section className="space-y-4">
+          <h3 className="border-b border-gray-200 pb-2 text-xl font-semibold text-gray-900">
+            配信先の操作
+          </h3>
+          <div className="grid gap-2 sm:grid-cols-3">
+            <AddRecipientsModal
+              email={email}
+              plan={plan}
+              addonUnitAmount={currentAddonUnitAmount}
+              addonCurrency={currentAddonCurrency}
+              existingRecipients={sortedRecipients}
+              onRefetch={() => refreshByEmail(email)}
+            />
+            <EditRecipientModal
+              ownerEmail={email}
+              addonRecipients={addonRecipients}
+              onSuccess={setRecipientList}
+            />
+            <DeleteRecipientsModal
+              ownerEmail={email}
+              addonRecipients={addonRecipients}
+              manageUrl={manageUrl}
+              onSuccess={setRecipientList}
+            />
           </div>
-        )}
+        </section>
+
+        <section className="space-y-4">
+          <h3 className="border-b border-gray-200 pb-2 text-xl font-semibold text-gray-900">
+            サブスクリプションの管理
+          </h3>
+          <div className="space-y-2 rounded-md bg-gray-50 p-4 text-sm text-gray-600">
+            <p>サブスクリプションの管理では以下の操作が行えます。</p>
+            <ul className="list-disc pl-5">
+              <li>請求情報の確認</li>
+              <li>サブスクリプションの解約</li>
+            </ul>
+          </div>
+          <PortalButton email={email} />
+        </section>
       </CardContent>
     </Card>
   );
 }
 
-function NoSubscription() {
-  return (
-    <div className="space-y-4">
-      <p className="text-gray-700">
-        購入情報がありません。トップページからサブスクリプションを購入できます。
-      </p>
-      <Button asChild className="w-full">
-        <a href="/">トップページへ</a>
-      </Button>
-    </div>
-  );
-}
-
-type AddRecipientsSectionProps = {
+type AddRecipientsModalProps = {
   email: string;
-  plan: Exclude<Plan, null>;
-  productName?: string;
+  plan: Plan;
   addonUnitAmount?: number;
   addonCurrency?: string;
+  existingRecipients: RecipientInfo[];
+  onRefetch?: () => void | Promise<void>;
 };
-function AddRecipientsSection({
+
+function AddRecipientsModal({
   email,
   plan,
-  productName,
   addonUnitAmount,
   addonCurrency,
-}: AddRecipientsSectionProps) {
-  const [count, setCount] = useState<number>(1);
+  existingRecipients,
+  onRefetch,
+}: AddRecipientsModalProps) {
+  const [open, setOpen] = useState(false);
+  const [count, setCount] = useState(1);
+  const [countInput, setCountInput] = useState("1");
   const [emails, setEmails] = useState<string[]>([""]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [postUpdateOpen, setPostUpdateOpen] = useState(false);
+  const [updatedProductName, setUpdatedProductName] = useState<string>("");
+  const [updatedQuantity, setUpdatedQuantity] = useState<number>(0);
+  const [portalUrl, setPortalUrl] = useState<string>("");
+  const [postCheckoutOpen, setPostCheckoutOpen] = useState(false);
+  const [checkoutUrl, setCheckoutUrl] = useState<string>("");
+  const [suspendReset, setSuspendReset] = useState(false);
 
   useEffect(() => {
-    // Adjust emails array length to count
+    if (!open && !suspendReset) {
+      setCount(1);
+      setCountInput("1");
+      setEmails([""]);
+      setError(null);
+      setSaving(false);
+    }
+  }, [open, suspendReset]);
+
+  useEffect(() => {
     setEmails((prev) => {
       const next = prev.slice(0, count);
-      while (next.length < count) next.push("");
+      while (next.length < count) {
+        next.push("");
+      }
       return next;
     });
   }, [count]);
 
-  // Switched from Payment Links to Checkout Session API to ensure quantity is honored
-  // Keep a dummy value so legacy checks like `if (!stripeUrl)` skip early returns.
-  const stripeUrl = "checkout-session";
+  const normalizedExisting = useMemo(() => {
+    const set = new Set<string>();
+    existingRecipients.forEach((recipient) => {
+      if (recipient.email) {
+        set.add(recipient.email.toLowerCase());
+      }
+    });
+    set.add(email.toLowerCase());
+    return set;
+  }, [existingRecipients, email]);
 
-  const updateEmail = (idx: number, value: string) => {
-    setEmails((prev) => prev.map((v, i) => (i === idx ? value : v)));
+  const normalizedNewEmails = useMemo(
+    () => emails.map((value) => value.trim().toLowerCase()).filter(Boolean),
+    [emails]
+  );
+
+  const hasExistingDuplicate = normalizedNewEmails.some((value) =>
+    normalizedExisting.has(value)
+  );
+  const hasInternalDuplicate =
+    new Set(normalizedNewEmails).size !== normalizedNewEmails.length;
+
+  const handleCountChange = (value: string) => {
+    const digits = value.replace(/[^0-9]/g, "");
+    if (digits === "") {
+      setCountInput("");
+      return; // 入力編集中は空文字を許容
+    }
+    const n = parseInt(digits, 10);
+    if (Number.isNaN(n)) {
+      setCountInput("");
+      return;
+    }
+    if (n > MAX_ADDITIONAL_RECIPIENTS) {
+      setCount(MAX_ADDITIONAL_RECIPIENTS);
+      setCountInput(String(MAX_ADDITIONAL_RECIPIENTS));
+      return;
+    }
+    setCountInput(digits);
+    const clampedMin = Math.max(1, n);
+    setCount(clampedMin);
   };
 
-  const handleProceed = async () => {
-    if (!stripeUrl) {
-      setError("購入リンクが未設定です");
-      return;
-    }
-    // Basic validation
-    const trimmed = emails.map((e) => e.trim()).filter(Boolean);
-    if (trimmed.length !== count) {
-      setError("人数分のメールアドレスを入力してください");
-      return;
-    }
+  const updateEmail = (index: number, value: string) => {
+    setEmails((prev) =>
+      prev.map((current, idx) => (idx === index ? value : current))
+    );
+  };
 
+  const canSubmit =
+    normalizedNewEmails.length === count &&
+    !hasExistingDuplicate &&
+    !hasInternalDuplicate &&
+    !saving;
+
+  const handleSubmit = async () => {
+    if (!canSubmit) return;
+    // Hide main modal while showing confirmation to avoid stacked modals
+    setSuspendReset(true);
+    setOpen(false);
+    setConfirmOpen(true);
+  };
+
+  const performPurchase = async () => {
     setSaving(true);
     setError(null);
     try {
-      // 保存してからStripeへ遷移
-      const res = await fetch("/api/recipients", {
+      const payload = emails.map((value) => value.trim()).filter(Boolean);
+      const res = await fetch("/api/stripe/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ownerEmail: email, plan, recipients: trimmed }),
+        body: JSON.stringify({
+          plan: plan,
+          quantity: count,
+          ownerEmail: email,
+          additionalEmails: payload,
+        }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => null);
-        throw new Error(data?.error || "保存に失敗しました");
-      }
-      // Create Stripe Checkout Session on server with accurate quantity
-      const checkoutRes = await fetch("/api/stripe/checkout", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ plan, quantity: count, ownerEmail: email }),
-      });
-      if (!checkoutRes.ok) {
-        const data = await checkoutRes.json().catch(() => null);
         throw new Error(data?.error || "Checkoutの作成に失敗しました");
       }
-      const { url } = await checkoutRes.json();
+      const data = await res.json();
+      if (data?.updated && data?.portalUrl) {
+        setUpdatedProductName(String(data.productName || "配信先追加"));
+        setUpdatedQuantity(Number(data.newQuantity || count));
+        setPortalUrl(String(data.portalUrl));
+        setPostUpdateOpen(true);
+        setSuspendReset(false);
+        setOpen(false);
+        return;
+      }
+      const url = data?.url as string | undefined;
       if (!url) throw new Error("Checkout URLが取得できませんでした");
-      window.location.assign(url);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "エラーが発生しました");
+      setCheckoutUrl(url);
+      try {
+        window.open(url, "_blank", "noopener,noreferrer");
+      } catch {}
+      setPostCheckoutOpen(true);
+      setSuspendReset(false);
+      setOpen(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "エラーが発生しました");
+    } finally {
+      setSaving(false);
+      setConfirmOpen(false);
+    }
+  };
+
+  return (
+    <>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogTrigger asChild>
+          <Button className="w-full">追加</Button>
+        </DialogTrigger>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="text-xl font-bold">
+              配信先を追加する
+            </DialogTitle>
+            <DialogDescription>
+              新しく配信先に追加するメールアドレスを入力してください。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogBody className="space-y-5">
+            {typeof addonUnitAmount !== "undefined" && (
+              <div className="rounded-md bg-gray-50 p-3 text-sm text-gray-700">
+                追加料金（月額）：
+                {formatCurrency(addonUnitAmount, addonCurrency)} ／
+                1メールアドレス
+              </div>
+            )}
+            <div className="space-y-2">
+              <Label htmlFor="addon-count">
+                追加するメールアドレス数（最大{MAX_ADDITIONAL_RECIPIENTS}件）
+              </Label>
+              <Input
+                id="addon-count"
+                type="number"
+                min={1}
+                max={MAX_ADDITIONAL_RECIPIENTS}
+                step={1}
+                value={countInput}
+                onChange={(event) => handleCountChange(event.target.value)}
+                onFocus={(e) => e.currentTarget.select()}
+                onBlur={() => {
+                  if (countInput === "") {
+                    setCount(1);
+                    setCountInput("1");
+                    return;
+                  }
+                  const n = parseInt(countInput, 10);
+                  const clamped = Math.min(
+                    MAX_ADDITIONAL_RECIPIENTS,
+                    Math.max(1, Number.isNaN(n) ? 1 : n)
+                  );
+                  setCount(clamped);
+                  if (String(clamped) !== countInput) {
+                    setCountInput(String(clamped));
+                  }
+                }}
+              />
+            </div>
+            <div className="space-y-3">
+              <Label>追加するメールアドレス</Label>
+              {emails.map((value, index) => (
+                <Input
+                  key={index}
+                  type="email"
+                  required
+                  value={value}
+                  onChange={(event) => updateEmail(index, event.target.value)}
+                  placeholder={`example${index + 1}@email.com`}
+                />
+              ))}
+            </div>
+            {(hasExistingDuplicate || hasInternalDuplicate) && (
+              <div className="rounded-lg bg-red-50 p-3 text-sm text-red-600">
+                既に登録済みのメールアドレスが含まれています。
+              </div>
+            )}
+            {error && (
+              <div className="rounded-lg bg-red-50 p-3 text-sm text-red-600">
+                {error}
+              </div>
+            )}
+          </DialogBody>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button variant="outline" disabled={saving}>
+                キャンセル
+              </Button>
+            </DialogClose>
+            <Button onClick={handleSubmit} disabled={!canSubmit}>
+              {saving ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" /> 保存中...
+                </>
+              ) : (
+                "追加購入へ進む"
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 確認ダイアログ */}
+      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="text-lg font-bold">
+              追加購入確定
+            </DialogTitle>
+            <DialogDescription className="mb-6">
+              {formatCurrency((addonUnitAmount || 0) * count, addonCurrency)}{" "}
+              のサブスクリプション追加購入を確定します。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="mt-2">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setConfirmOpen(false);
+                setSuspendReset(false);
+                setOpen(true); // reopen main modal when canceled
+              }}
+              disabled={saving}
+            >
+              キャンセル
+            </Button>
+            <Button onClick={performPurchase} disabled={saving}>
+              {saving ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" /> 処理中...
+                </>
+              ) : (
+                "OK"
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 追加購入完了ダイアログ（1回目/2回目以降 共通） */}
+      <Dialog open={postUpdateOpen} onOpenChange={setPostUpdateOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="text-lg font-bold">
+              追加購入が完了しました
+            </DialogTitle>
+            <DialogDescription className="mb-6">
+              {`「${updatedProductName} 」 の合計数量は 「 ${updatedQuantity} 」 になりました。`}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  try {
+                    window.location.reload();
+                  } catch {}
+                }}
+              >
+                閉じる
+              </Button>
+            </DialogClose>
+            {portalUrl ? (
+              <Button asChild>
+                <a href={portalUrl} target="_blank" rel="noopener noreferrer">
+                  管理画面で確認
+                </a>
+              </Button>
+            ) : null}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 新規購入案内ダイアログ */}
+      <Dialog open={postCheckoutOpen} onOpenChange={setPostCheckoutOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="text-lg font-bold">
+              購入ページを開きました
+            </DialogTitle>
+            <DialogDescription>
+              サブスクリプションの購入ページを別タブで開きます。決済完了後に本画面へお戻りください。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button variant="outline">閉じる</Button>
+            </DialogClose>
+            {checkoutUrl ? (
+              <Button asChild>
+                <a href={checkoutUrl} target="_blank" rel="noopener noreferrer">
+                  購入ページを開く
+                </a>
+              </Button>
+            ) : null}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
+type EditRecipientModalProps = {
+  ownerEmail: string;
+  addonRecipients: RecipientInfo[];
+  onSuccess: (recipients: RecipientInfo[]) => void;
+};
+
+function EditRecipientModal({
+  ownerEmail,
+  addonRecipients,
+  onSuccess,
+}: EditRecipientModalProps) {
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [selectedEmail, setSelectedEmail] = useState<string>("");
+  const [nextEmail, setNextEmail] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+
+  const selectableRecipients = useMemo(
+    () => addonRecipients.filter((recipient) => !recipient.pending_removal),
+    [addonRecipients]
+  );
+
+  useEffect(() => {
+    if (open) {
+      setSelectedEmail(selectableRecipients[0]?.email ?? "");
+    } else {
+      setNextEmail("");
+      setError(null);
+      setSaving(false);
+    }
+  }, [open, selectableRecipients]);
+
+  const handleSubmit = async () => {
+    if (!selectedEmail || !nextEmail.trim()) {
+      setError("新しいメールアドレスを入力してください");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/recipients", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ownerEmail,
+          fromEmail: selectedEmail,
+          toEmail: nextEmail.trim(),
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error || "メールアドレスの変更に失敗しました");
+      }
+      const data = await res.json();
+      if (Array.isArray(data?.recipients)) {
+        onSuccess(data.recipients as RecipientInfo[]);
+      }
+      toast({ title: "メールアドレスを変更しました" });
+      setDone(true);
+      setTimeout(() => {
+        setOpen(false);
+        setDone(false);
+      }, 1200);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "エラーが発生しました");
     } finally {
       setSaving(false);
     }
   };
 
   return (
-    <div className="space-y-5">
-      <div className="space-y-2">
-        <Label htmlFor="count">追加するメールアドレス数（最大10）</Label>
-        <Input
-          id="count"
-          type="number"
-          min={1}
-          max={10}
-          value={count}
-          onChange={(e) => {
-            const n = Number(e.target.value);
-            if (Number.isFinite(n)) {
-              const clamped = Math.min(10, Math.max(1, Math.floor(n)));
-              setCount(clamped);
-            }
-          }}
-        />
-      </div>
-
-      <div className="space-y-3">
-        <Label>追加するメールアドレスを入力</Label>
-        {emails.map((val, i) => (
-          <Input
-            key={i}
-            type="email"
-            required
-            value={val}
-            onChange={(e) => updateEmail(i, e.target.value)}
-            placeholder={`example${i + 1}@email.com`}
-          />
-        ))}
-      </div>
-
-      {error && (
-        <div className="text-sm text-red-600 bg-red-50 p-3 rounded-lg">
-          {error}
-        </div>
-      )}
-
-      <div className="grid gap-3">
-        <Button
-          onClick={handleProceed}
-          disabled={saving}
-          variant="outline"
-          className="w-full h-auto p-3 justify-center text-base font-semibold rounded-lg border-2 border-gray-300 bg-white shadow-sm hover:border-gray-400 hover:shadow-md transition"
-        >
-          {saving ? (
-            <>
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              保存中...
-            </>
-          ) : (
-            "追加購入へ進む"
-          )}
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button className="w-full" disabled={!selectableRecipients.length}>
+          変更
         </Button>
-      </div>
-    </div>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle className="text-xl font-bold">
+            配信先を変更する
+          </DialogTitle>
+          <DialogDescription>
+            変更できるのは追加登録されたメールアドレスのみです。
+          </DialogDescription>
+        </DialogHeader>
+        <DialogBody className="space-y-4">
+          {done && (
+            <div className="rounded-md bg-green-50 p-3 text-sm text-green-700">
+              変更が完了しました。
+            </div>
+          )}
+          {selectableRecipients.length === 0 ? (
+            <p className="text-sm text-gray-600">
+              変更可能なメールアドレスがありません。
+            </p>
+          ) : (
+            <>
+              <div className="space-y-2">
+                <Label htmlFor="edit-target">変更するメールアドレス</Label>
+                <select
+                  id="edit-target"
+                  className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  value={selectedEmail}
+                  onChange={(event) => setSelectedEmail(event.target.value)}
+                >
+                  {selectableRecipients.map((recipient) => (
+                    <option key={recipient.email} value={recipient.email}>
+                      {recipient.email}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="edit-next">新しいメールアドレス</Label>
+                <Input
+                  id="edit-next"
+                  type="email"
+                  value={nextEmail}
+                  onChange={(event) => setNextEmail(event.target.value)}
+                  required
+                />
+              </div>
+            </>
+          )}
+          {error && (
+            <div className="rounded-lg bg-red-50 p-3 text-sm text-red-600">
+              {error}
+            </div>
+          )}
+        </DialogBody>
+        <DialogFooter>
+          <DialogClose asChild>
+            <Button variant="outline" disabled={saving}>
+              キャンセル
+            </Button>
+          </DialogClose>
+          <Button
+            onClick={handleSubmit}
+            disabled={saving || !selectableRecipients.length}
+          >
+            {saving ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" /> 保存中...
+              </>
+            ) : (
+              "変更する"
+            )}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+type DeleteRecipientsModalProps = {
+  ownerEmail: string;
+  addonRecipients: RecipientInfo[];
+  manageUrl?: string;
+  onSuccess: (recipients: RecipientInfo[]) => void;
+};
+
+function DeleteRecipientsModal({
+  ownerEmail,
+  addonRecipients,
+  manageUrl,
+  onSuccess,
+}: DeleteRecipientsModalProps) {
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [pendingEmail, setPendingEmail] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [hasMarked, setHasMarked] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [postDeleteOpen, setPostDeleteOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open) {
+      setPendingEmail(null);
+      setError(null);
+      setHasMarked(false);
+      setSelected(new Set());
+    }
+  }, [open]);
+
+  const quantityChangeEnabled = useMemo(
+    () =>
+      hasMarked ||
+      addonRecipients.some((recipient) => recipient.pending_removal),
+    [hasMarked, addonRecipients]
+  );
+
+  const toggleSelect = (email: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(email)) next.delete(email);
+      else next.add(email);
+      return next;
+    });
+  };
+
+  const handleCommitDelete = async () => {
+    const emails = Array.from(selected);
+    if (emails.length === 0) return;
+    setPendingEmail("__batch__");
+    setDeleting(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/recipients", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ownerEmail, emails }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error || "メールアドレスの削除に失敗しました");
+      }
+      const data = await res.json();
+      if (Array.isArray(data?.recipients)) {
+        onSuccess(data.recipients as RecipientInfo[]);
+      }
+      setHasMarked(true);
+      setSelected(new Set());
+      toast({ title: "選択した配信先を削除しました" });
+      setConfirmDeleteOpen(false);
+      setOpen(false);
+      setPostDeleteOpen(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "エラーが発生しました");
+    } finally {
+      setPendingEmail(null);
+      setDeleting(false);
+    }
+  };
+
+  const handleManageClick = () => {
+    toast({
+      title: "数量の自動反映について",
+      description:
+        "削除予約に応じてサブスクリプションの数量は自動で調整されています。管理画面の操作は不要です。",
+    });
+  };
+
+  return (
+    <>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogTrigger asChild>
+          <Button className="w-full" disabled={addonRecipients.length === 0}>
+            削除
+          </Button>
+        </DialogTrigger>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="text-xl font-bold">
+              配信先を削除する
+            </DialogTitle>
+            <DialogDescription>
+              削除できるのは追加登録されたメールアドレスのみです。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogBody className="space-y-4">
+            {addonRecipients.length === 0 ? (
+              <p className="text-sm text-gray-600">
+                削除可能なメールアドレスがありません。
+              </p>
+            ) : (
+              <ul className="space-y-2">
+                {addonRecipients.map((recipient) => (
+                  <li
+                    key={recipient.email}
+                    className={`flex items-center justify-between rounded-lg border bg-white px-3 py-2 text-sm ${
+                      selected.has(recipient.email)
+                        ? "border-red-300 bg-red-50"
+                        : "border-gray-200"
+                    }`}
+                  >
+                    <div>
+                      {recipient.email}
+                      {recipient.pending_removal ? (
+                        <span className="ml-2 text-xs text-red-600">
+                          （削除予約済み）
+                        </span>
+                      ) : selected.has(recipient.email) ? (
+                        <span className="ml-2 text-xs text-red-600">
+                          （削除選択中）
+                        </span>
+                      ) : null}
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      disabled={
+                        Boolean(recipient.pending_removal) ||
+                        Boolean(pendingEmail)
+                      }
+                      onClick={() => toggleSelect(recipient.email)}
+                      aria-label={`${recipient.email} を削除対象に切り替え`}
+                    >
+                      {selected.has(recipient.email) ? (
+                        "選択解除"
+                      ) : (
+                        <span className="text-lg">×</span>
+                      )}
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {error && (
+              <div className="rounded-lg bg-red-50 p-3 text-sm text-red-600">
+                {error}
+              </div>
+            )}
+          </DialogBody>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button variant="outline" disabled={Boolean(pendingEmail)}>
+                閉じる
+              </Button>
+            </DialogClose>
+            <Button
+              variant="outline"
+              onClick={() => setConfirmDeleteOpen(true)}
+              disabled={selected.size === 0 || Boolean(pendingEmail)}
+            >
+              選択した配信先を削除（数量自動調整）
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      {/* 削除確認モーダル */}
+      <Dialog open={confirmDeleteOpen} onOpenChange={setConfirmDeleteOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="text-lg font-bold">削除確認</DialogTitle>
+            <DialogDescription className="mb-6">
+              選択した {selected.size} 件の配信先を削除します。
+              <br />
+              サブスクリプションの数量が {selected.size} 件マイナスされます。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="mt-2">
+            <Button
+              variant="outline"
+              onClick={() => setConfirmDeleteOpen(false)}
+              disabled={deleting}
+            >
+              キャンセル
+            </Button>
+            <Button onClick={handleCommitDelete} disabled={deleting}>
+              {deleting ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" /> 処理中...
+                </>
+              ) : (
+                "OK"
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 削除完了モーダル */}
+      <Dialog open={postDeleteOpen} onOpenChange={setPostDeleteOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="text-lg font-bold">
+              削除が完了しました
+            </DialogTitle>
+            <DialogDescription className="mb-6">
+              選択した配信先の削除とサブスクリプション数量の調整が完了しました。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  try {
+                    window.location.reload();
+                  } catch {}
+                }}
+              >
+                閉じる
+              </Button>
+            </DialogClose>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
@@ -386,4 +1250,17 @@ function formatCurrency(amount: number, currency?: string) {
   } catch {
     return `${value} ${currency?.toUpperCase() || "JPY"}`;
   }
+}
+
+function NoSubscription() {
+  return (
+    <div className="space-y-4">
+      <p className="text-gray-700">
+        購入履歴がありません。トップページからサブスクリプションを購入できます。
+      </p>
+      <Button asChild className="w-full">
+        <a href="/">トップページへ</a>
+      </Button>
+    </div>
+  );
 }

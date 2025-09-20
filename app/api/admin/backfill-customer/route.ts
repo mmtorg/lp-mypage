@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { stripe } from "@/lib/stripe";
-import { supabaseAdmin, getUserIdByEmail } from "@/lib/supabase-admin";
+import { supabaseAdmin } from "@/lib/supabase-admin";
 
 export async function POST(req: NextRequest) {
   try {
@@ -12,13 +12,7 @@ export async function POST(req: NextRequest) {
 
     const body = await req.json().catch(() => ({}));
     const email = String(body?.email || "").trim();
-    let userId: string | null = body?.user_id || null;
     if (!email) return NextResponse.json({ error: "email required" }, { status: 400 });
-
-    if (!userId) {
-      userId = await getUserIdByEmail(email);
-      if (!userId) return NextResponse.json({ error: "user not found" }, { status: 404 });
-    }
 
     // Find Stripe customer by email
     const found = await stripe.customers.search({
@@ -30,22 +24,27 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "stripe customer not found" }, { status: 404 });
     }
 
-    await supabaseAdmin
+    // Update by customer_id if exists, otherwise insert new row
+    const { data: existing } = await supabaseAdmin
       .from("user_stripe")
-      .upsert(
-        {
-          user_id: userId,
-          email,
-          stripe_customer_id: customer.id,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "user_id" }
-      );
+      .select("id")
+      .eq("stripe_customer_id", customer.id)
+      .maybeSingle();
 
-    return NextResponse.json({ ok: true, user_id: userId, stripe_customer_id: customer.id, email });
+    if (existing?.id) {
+      await supabaseAdmin
+        .from("user_stripe")
+        .update({ email, updated_at: new Date().toISOString() })
+        .eq("id", existing.id);
+    } else {
+      await supabaseAdmin
+        .from("user_stripe")
+        .insert({ email, stripe_customer_id: customer.id, updated_at: new Date().toISOString() });
+    }
+
+    return NextResponse.json({ ok: true, stripe_customer_id: customer.id, email });
   } catch (e) {
     console.error("backfill-customer error", e);
     return NextResponse.json({ error: "server error" }, { status: 500 });
   }
 }
-

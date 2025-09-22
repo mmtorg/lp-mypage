@@ -1151,15 +1151,21 @@ function DeleteRecipientsModal({
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [postDeleteOpen, setPostDeleteOpen] = useState(false);
+  const [skipResetOnce, setSkipResetOnce] = useState(false);
 
   useEffect(() => {
     if (!open) {
+      if (confirmDeleteOpen || postDeleteOpen) return; // ← ガード
+      if (skipResetOnce) {
+        setSkipResetOnce(false);
+        return;
+      }
       setPendingEmail(null);
       setError(null);
       setHasMarked(false);
       setSelected(new Set());
     }
-  }, [open]);
+  }, [open, skipResetOnce, confirmDeleteOpen, postDeleteOpen]);
 
   const quantityChangeEnabled = useMemo(
     () =>
@@ -1298,7 +1304,11 @@ function DeleteRecipientsModal({
             </DialogClose>
             <Button
               variant="outline"
-              onClick={() => setConfirmDeleteOpen(true)}
+              onClick={() => {
+                setSkipResetOnce(true);
+                setConfirmDeleteOpen(true); // 先に true にする
+                setOpen(false); // 後から親を閉じる
+              }}
               disabled={selected.size === 0 || Boolean(pendingEmail)}
             >
               選択した配信先を削除（数量自動調整）
@@ -1307,7 +1317,13 @@ function DeleteRecipientsModal({
         </DialogContent>
       </Dialog>
       {/* 削除確認モーダル */}
-      <Dialog open={confirmDeleteOpen} onOpenChange={setConfirmDeleteOpen}>
+      <Dialog
+        open={confirmDeleteOpen}
+        onOpenChange={(v) => {
+          setConfirmDeleteOpen(v);
+          if (!v && !postDeleteOpen) setOpen(true);
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle className="text-lg font-bold">削除確認</DialogTitle>
@@ -1320,7 +1336,10 @@ function DeleteRecipientsModal({
           <DialogFooter className="mt-2">
             <Button
               variant="outline"
-              onClick={() => setConfirmDeleteOpen(false)}
+              onClick={() => {
+                setConfirmDeleteOpen(false);
+                setOpen(true);
+              }}
               disabled={deleting}
             >
               キャンセル
@@ -1337,7 +1356,6 @@ function DeleteRecipientsModal({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
       {/* 削除完了モーダル */}
       <Dialog open={postDeleteOpen} onOpenChange={setPostDeleteOpen}>
         <DialogContent>

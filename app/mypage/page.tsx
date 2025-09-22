@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -216,7 +216,8 @@ export default function MyPage() {
             addonCurrency={sub.addon_currency}
             recipients={sub.recipients}
             purchasedItems={sub.purchased_items}
-            onReset={() => setSub(null)}
+            onRefetch={refreshByEmail}
+            onReset={() => setSub(null)} // 追加：戻るボタンで sub をクリア
           />
         )}
       </div>
@@ -233,6 +234,7 @@ type ResolvedViewProps = {
   recipients?: RecipientInfo[];
   purchasedItems?: PurchasedItem[];
   onReset: () => void;
+  onRefetch?: (targetEmail?: string) => void | Promise<void>;
 };
 
 function ResolvedView({
@@ -244,6 +246,7 @@ function ResolvedView({
   recipients,
   purchasedItems,
   onReset,
+  onRefetch,
 }: ResolvedViewProps) {
   const { toast } = useToast();
   const [recipientList, setRecipientList] = useState<RecipientInfo[]>(
@@ -448,7 +451,7 @@ function ResolvedView({
               addonUnitAmount={currentAddonUnitAmount}
               addonCurrency={currentAddonCurrency}
               existingRecipients={sortedRecipients}
-              onRefetch={() => refreshByEmail(email)}
+              onRefetch={() => onRefetch?.(email)}
             />
             <EditRecipientModal
               ownerEmail={email}
@@ -513,6 +516,9 @@ function AddRecipientsModal({
   const [postCheckoutOpen, setPostCheckoutOpen] = useState(false);
   const [checkoutUrl, setCheckoutUrl] = useState<string>("");
   const [suspendReset, setSuspendReset] = useState(false);
+  const [prechecking, setPrechecking] = useState(false);
+  const [awaitingCheckoutRedirect, setAwaitingCheckoutRedirect] =
+    useState(false);
 
   useEffect(() => {
     if (!open && !suspendReset) {
@@ -587,19 +593,66 @@ function AddRecipientsModal({
     normalizedNewEmails.length === count &&
     !hasExistingDuplicate &&
     !hasInternalDuplicate &&
-    !saving;
+    !saving &&
+    !prechecking;
 
-  const handleSubmit = async () => {
+  // ===== プリチェック付き：「追加購入へ進む」を押した時点で初期表示を決める =====
+  const handleOpenConfirm = async () => {
     if (!canSubmit) return;
-    // Hide main modal while showing confirmation to avoid stacked modals
-    setSuspendReset(true);
-    setOpen(false);
-    setConfirmOpen(true);
+
+    setError(null);
+    setCheckoutUrl("");
+    setAwaitingCheckoutRedirect(false);
+
+    try {
+      setPrechecking(true);
+      const payload = emails.map((v) => v.trim()).filter(Boolean);
+      const res = await fetch("/api/stripe/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          plan,
+          quantity: count,
+          ownerEmail: email,
+          additionalEmails: payload,
+          precheck: true, // ★プリチェック
+        }),
+      });
+      const data = await res.json();
+
+      // ★ ここを変更：2回目以降でも必ず確認モーダルを挟む
+      if (data?.canFinalizeSilently) {
+        // サイレント確定はせず、確認モーダルを開くだけ
+        setAwaitingCheckoutRedirect(false); // 「決済画面へ」ボタンではなく「OK」ボタン表示
+        setSuspendReset(true);
+        setOpen(false); // 入力モーダルを閉じる
+        setConfirmOpen(true); // 確認モーダルを開く
+        return;
+      }
+
+      // 初回（決済画面が必要）→ 最初から差し替え版で開く
+      if (data?.url) {
+        setCheckoutUrl(String(data.url));
+      }
+      if (data?.isPaymentLink || data?.openInSameTab) {
+        setAwaitingCheckoutRedirect(true);
+      }
+
+      // メインモーダルを閉じて確認モーダルを開く
+      setSuspendReset(true);
+      setOpen(false);
+      setConfirmOpen(true);
+    } catch (e) {
+      setError("エラーが発生しました");
+    } finally {
+      setPrechecking(false);
+    }
   };
 
   const performPurchase = async () => {
     setSaving(true);
     setError(null);
+    let willRedirect = false; // ★finallyで参照するローカルフラグ
     try {
       const payload = emails.map((value) => value.trim()).filter(Boolean);
       const res = await fetch("/api/stripe/checkout", {
@@ -617,29 +670,63 @@ function AddRecipientsModal({
         throw new Error(data?.error || "Checkoutの作成に失敗しました");
       }
       const data = await res.json();
-      if (data?.updated && data?.portalUrl) {
-        setUpdatedProductName(String(data.productName || "配信先追加"));
-        setUpdatedQuantity(Number(data.newQuantity || count));
-        setPortalUrl(String(data.portalUrl));
+      if (
+        data &&
+        typeof data === "object" &&
+        "updated" in data &&
+        "portalUrl" in data
+      ) {
+        const d = data as Record<string, unknown>;
+        setUpdatedProductName(String(d.productName ?? "配信先追加"));
+        setUpdatedQuantity(Number(d.newQuantity ?? count));
+        setPortalUrl(String(d.portalUrl));
         setPostUpdateOpen(true);
         setSuspendReset(false);
         setOpen(false);
         return;
       }
-      const url = data?.url as string | undefined;
+      const url =
+        data &&
+        typeof data === "object" &&
+        "url" in data &&
+        typeof (data as Record<string, unknown>).url === "string"
+          ? String((data as Record<string, unknown>).url)
+          : undefined;
+      const isPaymentLink = Boolean(
+        data &&
+          typeof data === "object" &&
+          "isPaymentLink" in data &&
+          Boolean((data as Record<string, unknown>).isPaymentLink)
+      );
+      const openInSameTab = Boolean(
+        data &&
+          typeof data === "object" &&
+          "openInSameTab" in data &&
+          Boolean((data as Record<string, unknown>).openInSameTab)
+      );
       if (!url) throw new Error("Checkout URLが取得できませんでした");
       setCheckoutUrl(url);
-      try {
-        window.open(url, "_blank", "noopener,noreferrer");
-      } catch {}
-      setPostCheckoutOpen(true);
-      setSuspendReset(false);
-      setOpen(false);
+      if (isPaymentLink || openInSameTab) {
+        setAwaitingCheckoutRedirect(true);
+        setSuspendReset(true);
+        willRedirect = true; // ★同タブ遷移へ切り替え
+        return;
+      } else {
+        try {
+          window.open(url, "_blank", "noopener,noreferrer");
+        } catch {}
+        setPostCheckoutOpen(true);
+        setSuspendReset(false);
+        setOpen(false);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "エラーが発生しました");
     } finally {
       setSaving(false);
-      setConfirmOpen(false);
+      // ★React の state はすぐ反映されないためローカル変数で判定
+      if (!willRedirect) {
+        setConfirmOpen(false);
+      }
     }
   };
 
@@ -656,6 +743,12 @@ function AddRecipientsModal({
             </DialogTitle>
             <DialogDescription>
               新しく配信先に追加するメールアドレスを入力してください。
+              {awaitingCheckoutRedirect && (
+                <>
+                  <br />
+                  サブスクリプション購入画面で購入を確定してください
+                </>
+              )}
             </DialogDescription>
           </DialogHeader>
           <DialogBody className="space-y-5">
@@ -678,6 +771,7 @@ function AddRecipientsModal({
                 step={1}
                 value={countInput}
                 onChange={(event) => handleCountChange(event.target.value)}
+                disabled={prechecking || saving}
                 onFocus={(e) => e.currentTarget.select()}
                 onBlur={() => {
                   if (countInput === "") {
@@ -707,6 +801,7 @@ function AddRecipientsModal({
                   value={value}
                   onChange={(event) => updateEmail(index, event.target.value)}
                   placeholder={`example${index + 1}@email.com`}
+                  disabled={prechecking || saving}
                 />
               ))}
             </div>
@@ -727,10 +822,17 @@ function AddRecipientsModal({
                 キャンセル
               </Button>
             </DialogClose>
-            <Button onClick={handleSubmit} disabled={!canSubmit}>
-              {saving ? (
+            {/* ここをプリチェック起点に変更 */}
+            <Button onClick={handleOpenConfirm} disabled={!canSubmit}>
+              {prechecking ? ( // ★プリチェック中
                 <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" /> 保存中...
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  確認中...
+                </>
+              ) : saving ? ( // （保険：同関数を使い回す場合）
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  保存中...
                 </>
               ) : (
                 "追加購入へ進む"
@@ -741,15 +843,28 @@ function AddRecipientsModal({
       </Dialog>
 
       {/* 確認ダイアログ */}
-      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+      <Dialog
+        open={confirmOpen}
+        onOpenChange={(v) => {
+          setConfirmOpen(v);
+          if (!v) {
+            setAwaitingCheckoutRedirect(false);
+          }
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle className="text-lg font-bold">
               追加購入確定
             </DialogTitle>
-            <DialogDescription className="mb-6">
+            <DialogDescription className="mb-6 leading-relaxed">
               {formatCurrency((addonUnitAmount || 0) * count, addonCurrency)}{" "}
               のサブスクリプション追加購入を確定します。
+              {awaitingCheckoutRedirect && (
+                <span className="mt-4 block text-sm text-muted-foreground">
+                  サブスクリプション購入画面で購入を確定してください
+                </span>
+              )}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="mt-2">
@@ -759,20 +874,36 @@ function AddRecipientsModal({
                 setConfirmOpen(false);
                 setSuspendReset(false);
                 setOpen(true); // reopen main modal when canceled
+                setAwaitingCheckoutRedirect(false);
               }}
               disabled={saving}
             >
               キャンセル
             </Button>
-            <Button onClick={performPurchase} disabled={saving}>
-              {saving ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" /> 処理中...
-                </>
-              ) : (
-                "OK"
-              )}
-            </Button>
+            {awaitingCheckoutRedirect ? (
+              <Button
+                onClick={() => {
+                  if (checkoutUrl) {
+                    try {
+                      window.location.href = checkoutUrl;
+                    } catch {}
+                  }
+                }}
+                disabled={saving || !checkoutUrl}
+              >
+                決済画面を開く
+              </Button>
+            ) : (
+              <Button onClick={performPurchase} disabled={saving}>
+                {saving ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" /> 処理中...
+                  </>
+                ) : (
+                  "OK"
+                )}
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -812,7 +943,7 @@ function AddRecipientsModal({
         </DialogContent>
       </Dialog>
 
-      {/* 新規購入案内ダイアログ */}
+      {/* 新規購入案内ダイアログ（別タブ用フォールバック） */}
       <Dialog open={postCheckoutOpen} onOpenChange={setPostCheckoutOpen}>
         <DialogContent>
           <DialogHeader>

@@ -32,7 +32,10 @@ export async function POST(req: NextRequest) {
           rawPlan && ["lite", "business"].includes(String(rawPlan))
             ? (rawPlan as "lite" | "business")
             : null;
-        console.log("[webhook] checkout.session.completed", { customerId, customerEmail });
+        console.log("[webhook] checkout.session.completed", {
+          customerId,
+          customerEmail,
+        });
 
         // If metadata.plan is missing (e.g., Payment Link), infer plan from Product ID mapping
         // and only persist when the created subscription is in a valid status.
@@ -47,12 +50,16 @@ export async function POST(req: NextRequest) {
             .split(",")
             .map((s) => s.trim())
             .filter(Boolean);
-          const BUSINESS_PRODUCT_IDS = (process.env.STRIPE_PRODUCT_IDS_BUSINESS || "")
+          const BUSINESS_PRODUCT_IDS = (
+            process.env.STRIPE_PRODUCT_IDS_BUSINESS || ""
+          )
             .split(",")
             .map((s) => s.trim())
             .filter(Boolean);
 
-          const inferPlanFromProductId = async (productId?: string | null): Promise<"lite" | "business" | null> => {
+          const inferPlanFromProductId = async (
+            productId?: string | null
+          ): Promise<"lite" | "business" | null> => {
             if (!productId) return null;
             if (LITE_PRODUCT_IDS.includes(productId)) return "lite";
             if (BUSINESS_PRODUCT_IDS.includes(productId)) return "business";
@@ -73,24 +80,40 @@ export async function POST(req: NextRequest) {
               const status = String((sub as any)?.status || "").toLowerCase();
               const item = (sub as any)?.items?.data?.[0];
               const prodAny = item?.price?.product as any;
-              const productId: string | undefined = typeof prodAny === "string" ? prodAny : prodAny?.id;
+              const productId: string | undefined =
+                typeof prodAny === "string" ? prodAny : prodAny?.id;
               const inferred = await inferPlanFromProductId(productId);
               if (inferred && VALID_STATUSES.has(status)) {
                 normalizedPlan = inferred;
-                console.log("[webhook] inferred plan from subscription", { subId, status, productId, normalizedPlan });
+                console.log("[webhook] inferred plan from subscription", {
+                  subId,
+                  status,
+                  productId,
+                  normalizedPlan,
+                });
               } else {
-                console.log("[webhook] skip persist from checkout: invalid or unknown status/plan", { subId, status, inferred });
+                console.log(
+                  "[webhook] skip persist from checkout: invalid or unknown status/plan",
+                  { subId, status, inferred }
+                );
               }
             } else if (session?.id) {
               // Fallback: try line items to guess plan (no status check possible here)
               // To honour "valid-only" policy, we do NOT persist if we cannot validate status.
               try {
-                const items = await stripe.checkout.sessions.listLineItems(session.id, { limit: 1 });
+                const items = await stripe.checkout.sessions.listLineItems(
+                  session.id,
+                  { limit: 1 }
+                );
                 const li = items?.data?.[0];
                 const prodAny = (li as any)?.price?.product as any;
-                const productId: string | undefined = typeof prodAny === "string" ? prodAny : prodAny?.id;
+                const productId: string | undefined =
+                  typeof prodAny === "string" ? prodAny : prodAny?.id;
                 const inferred = await inferPlanFromProductId(productId);
-                console.log("[webhook] inferred plan from line items (no persist without status)", { productId, inferred });
+                console.log(
+                  "[webhook] inferred plan from line items (no persist without status)",
+                  { productId, inferred }
+                );
               } catch {}
             }
           } catch (e) {
@@ -105,7 +128,9 @@ export async function POST(req: NextRequest) {
             const isEmail = (str: string) => /.+@.+\..+/.test(str);
 
             // custom_fields (Dashboard or API) — text fields
-            const fields: any[] = Array.isArray(s?.custom_fields) ? s.custom_fields : [];
+            const fields: any[] = Array.isArray(s?.custom_fields)
+              ? s.custom_fields
+              : [];
             for (const f of fields) {
               const val = f?.text?.value ?? f?.value ?? "";
               if (!val) continue;
@@ -119,12 +144,15 @@ export async function POST(req: NextRequest) {
 
             // metadata.additional_emails supports CSV or JSON array
             const meta = s?.metadata || {};
-            const raw = meta.additional_emails || meta.recipients || meta.emails;
+            const raw =
+              meta.additional_emails || meta.recipients || meta.emails;
             if (raw) {
               try {
                 const arr = Array.isArray(raw) ? raw : JSON.parse(raw);
                 if (Array.isArray(arr)) {
-                  for (const e of arr) if (typeof e === "string" && isEmail(e)) emails.push(e.trim());
+                  for (const e of arr)
+                    if (typeof e === "string" && isEmail(e))
+                      emails.push(e.trim());
                 }
               } catch {
                 const parts = String(raw)
@@ -145,10 +173,14 @@ export async function POST(req: NextRequest) {
           let parent: { id: number } | null = null;
 
           async function resolveOrCreateParent() {
-            const subId: string | undefined = session?.subscription || undefined;
+            const subId: string | undefined =
+              session?.subscription || undefined;
             const custId: string | undefined = customerId || undefined;
 
-            const baseUpdate: Record<string, any> = { email: customerEmail, updated_at: nowIso };
+            const baseUpdate: Record<string, any> = {
+              email: customerEmail,
+              updated_at: nowIso,
+            };
             if (normalizedPlan) baseUpdate.current_plan = normalizedPlan;
 
             // 1) Try by subscription_id first
@@ -181,14 +213,33 @@ export async function POST(req: NextRequest) {
               if (!found.error && found.data?.id) {
                 // If we have a subscription id and it differs (or found has null), insert a new row
                 if (subId && found.data.stripe_subscription_id !== subId) {
-                  const insPayload: Record<string, any> = { ...baseUpdate, stripe_customer_id: custId, stripe_subscription_id: subId };
+                  const insPayload: Record<string, any> = {
+                    ...baseUpdate,
+                    stripe_customer_id: custId,
+                    stripe_subscription_id: subId,
+                  };
                   const ins = await supabaseAdmin
                     .from("user_stripe")
                     .insert(insPayload)
                     .select("id")
                     .maybeSingle();
                   if (ins.error) {
-                    console.error("[webhook] insert user_stripe (by customer, new sub) failed", ins.error);
+                    // Race-safe fallback: if unique violation occurred, fetch the existing row by subscription_id
+                    const code = (ins.error as any)?.code;
+                    if (code === "23505" && subId) {
+                      const existed = await supabaseAdmin
+                        .from("user_stripe")
+                        .select("id")
+                        .eq("stripe_subscription_id", subId)
+                        .maybeSingle();
+                      if (!existed.error && existed.data?.id) {
+                        return existed.data;
+                      }
+                    }
+                    console.error(
+                      "[webhook] insert user_stripe (by customer, new sub) failed",
+                      ins.error
+                    );
                   }
                   return ins.data ?? found.data;
                 }
@@ -213,6 +264,32 @@ export async function POST(req: NextRequest) {
               .select("id")
               .maybeSingle();
             if (ins.error) {
+              // Race-safe fallback: unique violation means someone else already inserted; fetch existing row.
+              const code = (ins.error as any)?.code;
+              if (code === "23505") {
+                if (subId) {
+                  const existedBySub = await supabaseAdmin
+                    .from("user_stripe")
+                    .select("id")
+                    .eq("stripe_subscription_id", subId)
+                    .maybeSingle();
+                  if (!existedBySub.error && existedBySub.data?.id) {
+                    return existedBySub.data;
+                  }
+                }
+                if (custId) {
+                  const existedByCust = await supabaseAdmin
+                    .from("user_stripe")
+                    .select("id")
+                    .eq("stripe_customer_id", custId)
+                    .order("updated_at", { ascending: false })
+                    .limit(1)
+                    .maybeSingle();
+                  if (!existedByCust.error && existedByCust.data?.id) {
+                    return existedByCust.data;
+                  }
+                }
+              }
               console.error("[webhook] insert user_stripe failed", ins.error);
             }
             return ins.data ?? null;
@@ -239,48 +316,79 @@ export async function POST(req: NextRequest) {
           };
           try {
             if (session?.subscription) {
-              const sub = await stripe.subscriptions.retrieve(session.subscription);
+              const sub = await stripe.subscriptions.retrieve(
+                session.subscription
+              );
               const item = (sub as any)?.items?.data?.[0];
               const prodAny = item?.price?.product as any;
-              const productId: string | undefined = typeof prodAny === "string" ? prodAny : prodAny?.id;
+              const productId: string | undefined =
+                typeof prodAny === "string" ? prodAny : prodAny?.id;
               if (productId) {
                 try {
                   const product = await stripe.products.retrieve(productId);
-                  createdVia = mapTypeToVia((product as any)?.metadata?.type) ?? undefined;
+                  createdVia =
+                    mapTypeToVia((product as any)?.metadata?.type) ?? undefined;
                 } catch {}
               }
             } else if (session?.id) {
-              const items = await stripe.checkout.sessions.listLineItems(session.id, { limit: 1 });
+              const items = await stripe.checkout.sessions.listLineItems(
+                session.id,
+                { limit: 1 }
+              );
               const li: any = items?.data?.[0];
               const prodAny = li?.price?.product as any;
-              const productId: string | undefined = typeof prodAny === "string" ? prodAny : prodAny?.id;
+              const productId: string | undefined =
+                typeof prodAny === "string" ? prodAny : prodAny?.id;
               if (productId) {
                 try {
                   const product = await stripe.products.retrieve(productId);
-                  createdVia = mapTypeToVia((product as any)?.metadata?.type) ?? undefined;
+                  createdVia =
+                    mapTypeToVia((product as any)?.metadata?.type) ?? undefined;
                 } catch {}
               }
             }
           } catch {}
           if (parent?.id) {
-            // 'add' の場合は追加分のみ、'basic' の場合は本人+追加分
-            const targetEmails = createdVia === 'addon' ? extra : allEmails;
-            const rows = targetEmails.map((email) => {
-              const row: Record<string, any> = { email, user_stripe_id: parent.id };
-              if (normalizedPlan) row.plan = normalizedPlan;
-              if (createdVia !== undefined) row.created_via = createdVia;
-              return row;
-            });
-            const { error: recipErr } = await supabaseAdmin
-              .from("recipient_emails")
-              .upsert(rows, { onConflict: "email" }); // 既存があっても更新（created_via等を反映）
-            if (recipErr) console.error("recipient_emails upsert error", recipErr);
-            console.log("[webhook] recipients upserted", {
-              count: rows.length,
-              parentId: parent.id,
-              emails: targetEmails,
-              createdVia,
-            });
+            // 1) 契約者メール（customerEmail）は常に先に upsert する
+            if (customerEmail && createdVia !== "addon") {
+              const ownerRow: Record<string, any> = {
+                email: customerEmail,
+                user_stripe_id: parent.id,
+              };
+              if (normalizedPlan) ownerRow.plan = normalizedPlan;
+              // 契約者は 'initial' として扱う（後続の sub イベントで再調整される場合あり）
+              ownerRow.created_via = "initial";
+              const { error: ownerErr } = await supabaseAdmin
+                .from("recipient_emails")
+                .upsert([ownerRow], { onConflict: "email", ignoreDuplicates: true });
+              if (ownerErr)
+                console.error("recipient_emails upsert (owner) error", ownerErr);
+            }
+
+            // 2) 追加入力のメールを後で upsert（custom_fields/metadata 由来）
+            const targetEmails = extra; // 契約者は既に処理済み
+            if (targetEmails.length > 0) {
+              const rows = targetEmails.map((email) => {
+                const row: Record<string, any> = {
+                  email,
+                  user_stripe_id: parent.id,
+                };
+                if (normalizedPlan) row.plan = normalizedPlan;
+                if (createdVia !== undefined) row.created_via = createdVia;
+                return row;
+              });
+              const { error: recipErr } = await supabaseAdmin
+                .from("recipient_emails")
+                .upsert(rows, { onConflict: "email", ignoreDuplicates: true });
+              if (recipErr)
+                console.error("recipient_emails upsert (extras) error", recipErr);
+              console.log("[webhook] recipients upserted", {
+                count: rows.length,
+                parentId: parent.id,
+                emails: targetEmails,
+                createdVia,
+              });
+            }
           } else {
             console.warn("[webhook] skip recipients: parent not resolved", {
               customerId: customerId ?? null,
@@ -288,7 +396,9 @@ export async function POST(req: NextRequest) {
               emails: allEmails,
             });
           }
-          console.log("[webhook] linked customer", { customerId: customerId ?? null });
+          console.log("[webhook] linked customer", {
+            customerId: customerId ?? null,
+          });
         }
         break;
       }
@@ -303,12 +413,23 @@ export async function POST(req: NextRequest) {
             .eq("stripe_subscription_id", sub.id)
             .maybeSingle();
           if (parent?.id) {
-            await supabaseAdmin.from("recipient_emails").delete().eq("user_stripe_id", parent.id);
+            await supabaseAdmin
+              .from("recipient_emails")
+              .delete()
+              .eq("user_stripe_id", parent.id);
           }
-          await supabaseAdmin.from("user_stripe").delete().eq("stripe_subscription_id", sub.id);
-          console.log("[webhook] deleted records for canceled subscription", { subscription: sub.id });
+          await supabaseAdmin
+            .from("user_stripe")
+            .delete()
+            .eq("stripe_subscription_id", sub.id);
+          console.log("[webhook] deleted records for canceled subscription", {
+            subscription: sub.id,
+          });
         } catch (e) {
-          console.error("[webhook] failed to delete records for canceled subscription", e);
+          console.error(
+            "[webhook] failed to delete records for canceled subscription",
+            e
+          );
         }
         break;
       }
@@ -331,7 +452,9 @@ export async function POST(req: NextRequest) {
           .split(",")
           .map((s) => s.trim())
           .filter(Boolean);
-        const BUSINESS_PRODUCT_IDS = (process.env.STRIPE_PRODUCT_IDS_BUSINESS || "")
+        const BUSINESS_PRODUCT_IDS = (
+          process.env.STRIPE_PRODUCT_IDS_BUSINESS || ""
+        )
           .split(",")
           .map((s) => s.trim())
           .filter(Boolean);
@@ -341,12 +464,16 @@ export async function POST(req: NextRequest) {
           const item = sub.items?.data?.[0];
           console.log("[webhook] subscription item", {
             priceId: item?.price?.id,
-            product: typeof item?.price?.product === "string" ? item?.price?.product : item?.price?.product?.id,
+            product:
+              typeof item?.price?.product === "string"
+                ? item?.price?.product
+                : item?.price?.product?.id,
             status,
           });
           // 1) Product ID で判定（優先）
           const prodAny = item?.price?.product as any;
-          const productId: string | undefined = typeof prodAny === "string" ? prodAny : prodAny?.id;
+          const productId: string | undefined =
+            typeof prodAny === "string" ? prodAny : prodAny?.id;
           if (productId) {
             if (LITE_PRODUCT_IDS.includes(productId)) planType = "lite";
             if (BUSINESS_PRODUCT_IDS.includes(productId)) planType = "business";
@@ -365,7 +492,9 @@ export async function POST(req: NextRequest) {
         const isValid = VALID_STATUSES.has(String(status).toLowerCase());
         if (isValid && planType) {
           // Ensure row exists without ON CONFLICT
-          const ownerEmail = (await stripe.customers.retrieve(customerId) as any)?.email ?? null;
+          const ownerEmail =
+            ((await stripe.customers.retrieve(customerId)) as any)?.email ??
+            null;
           const nowIso = new Date().toISOString();
           let parent: { id: number } | null = null;
 
@@ -378,35 +507,81 @@ export async function POST(req: NextRequest) {
           if (!bySub.error && bySub.data?.id) {
             const upd = await supabaseAdmin
               .from("user_stripe")
-              .update({ email: ownerEmail, stripe_customer_id: customerId, current_plan: planType, updated_at: nowIso })
+              .update({
+                email: ownerEmail,
+                stripe_customer_id: customerId,
+                current_plan: planType,
+                updated_at: nowIso,
+              })
               .eq("id", bySub.data.id)
               .select("id")
               .maybeSingle();
             parent = upd.data ?? bySub.data;
           } else {
-            // Try by customer_id
-            const byCust = await supabaseAdmin
-              .from("user_stripe")
-              .select("id")
-              .eq("stripe_customer_id", customerId)
-              .maybeSingle();
-            if (!byCust.error && byCust.data?.id) {
+          // Try by customer_id
+          const byCust = await supabaseAdmin
+            .from("user_stripe")
+            .select("id, stripe_subscription_id")
+            .eq("stripe_customer_id", customerId)
+            .order("updated_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          if (!byCust.error && byCust.data?.id) {
+            // If existing row has different subscription, create a new row instead of overwriting
+            if (
+              byCust.data.stripe_subscription_id &&
+              byCust.data.stripe_subscription_id !== sub.id
+            ) {
+              const ins = await supabaseAdmin
+                .from("user_stripe")
+                .insert({
+                  email: ownerEmail,
+                  stripe_customer_id: customerId,
+                  stripe_subscription_id: sub.id,
+                  current_plan: planType,
+                  updated_at: nowIso,
+                })
+                .select("id")
+                .maybeSingle();
+              parent = ins.data ?? null;
+              if (ins.error)
+                console.error(
+                  "[webhook] insert user_stripe (sub events, new sub for same customer) failed",
+                  ins.error
+                );
+            } else {
+              // Update metadata on the existing row; do not change linkage when it differs
               const upd = await supabaseAdmin
                 .from("user_stripe")
-                .update({ email: ownerEmail, stripe_subscription_id: sub.id, current_plan: planType, updated_at: nowIso })
+                .update({
+                  email: ownerEmail,
+                  current_plan: planType,
+                  updated_at: nowIso,
+                })
                 .eq("id", byCust.data.id)
                 .select("id")
                 .maybeSingle();
               parent = upd.data ?? byCust.data;
-            } else {
-              const ins = await supabaseAdmin
-                .from("user_stripe")
-                .insert({ email: ownerEmail, stripe_customer_id: customerId, stripe_subscription_id: sub.id, current_plan: planType, updated_at: nowIso })
-                .select("id")
-                .maybeSingle();
-              parent = ins.data ?? null;
-              if (ins.error) console.error("[webhook] insert user_stripe (sub events) failed", ins.error);
             }
+          } else {
+            const ins = await supabaseAdmin
+              .from("user_stripe")
+              .insert({
+                email: ownerEmail,
+                stripe_customer_id: customerId,
+                stripe_subscription_id: sub.id,
+                current_plan: planType,
+                updated_at: nowIso,
+              })
+              .select("id")
+              .maybeSingle();
+            parent = ins.data ?? null;
+            if (ins.error)
+              console.error(
+                "[webhook] insert user_stripe (sub events) failed",
+                ins.error
+              );
+          }
           }
           console.log("[webhook] updated plan", {
             customerId,
@@ -424,14 +599,17 @@ export async function POST(req: NextRequest) {
                 .eq("user_stripe_id", parent.id);
             }
             // Ensure purchaser email row exists with the latest plan snapshot
-            const ownerEmail = (await stripe.customers.retrieve(customerId) as any)?.email as string | undefined;
+            const ownerEmail = (
+              (await stripe.customers.retrieve(customerId)) as any
+            )?.email as string | undefined;
             if (ownerEmail) {
               // Set created_via from Product metadata.type when known
               let createdVia: "initial" | "addon" | undefined = undefined;
               try {
                 const item = (sub as any)?.items?.data?.[0];
                 const prodAny = item?.price?.product as any;
-                const productId: string | undefined = typeof prodAny === "string" ? prodAny : prodAny?.id;
+                const productId: string | undefined =
+                  typeof prodAny === "string" ? prodAny : prodAny?.id;
                 if (productId) {
                   const product = await stripe.products.retrieve(productId);
                   const t = (product as any)?.metadata?.type;
@@ -441,12 +619,21 @@ export async function POST(req: NextRequest) {
                 }
               } catch {}
 
-              const upsertRow: Record<string, any> = { email: ownerEmail, plan: planType };
-              if (createdVia !== undefined) upsertRow.created_via = createdVia;
-              if (parent?.id) (upsertRow as any).user_stripe_id = parent.id;
-              await supabaseAdmin
-                .from("recipient_emails")
-                .upsert([upsertRow], { onConflict: "email", ignoreDuplicates: true });
+              // addon 購入の場合は契約者メールの user_stripe_id を上書きしない
+              if (createdVia !== "addon") {
+                const upsertRow: Record<string, any> = {
+                  email: ownerEmail,
+                  plan: planType,
+                };
+                if (createdVia !== undefined) upsertRow.created_via = createdVia;
+                if (parent?.id) (upsertRow as any).user_stripe_id = parent.id;
+                await supabaseAdmin
+                  .from("recipient_emails")
+                  .upsert([upsertRow], {
+                    onConflict: "email",
+                    ignoreDuplicates: true,
+                  });
+              }
             }
           } catch (e) {
             console.warn("[webhook] failed to propagate plan to recipients", e);
@@ -496,10 +683,15 @@ async function removePendingRecipients(customerId: string) {
       .in("user_stripe_id", idsParent)
       .eq("pending_removal", true);
     if (error) throw error;
-    const ids = (data ?? []).map((r: any) => r.id).filter((v: any) => typeof v === "number");
+    const ids = (data ?? [])
+      .map((r: any) => r.id)
+      .filter((v: any) => typeof v === "number");
     if (!ids.length) return;
     await supabaseAdmin.from("recipient_emails").delete().in("id", ids);
-    console.log("[webhook] removed pending recipients", { customerId, removed: ids.length });
+    console.log("[webhook] removed pending recipients", {
+      customerId,
+      removed: ids.length,
+    });
   } catch (err) {
     console.error("[webhook] failed to remove pending recipients", err);
   }

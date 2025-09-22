@@ -27,7 +27,6 @@ create index if not exists idx_user_stripe_email on public.user_stripe (email);
 create index if not exists idx_user_stripe_customer on public.user_stripe (stripe_customer_id);
 create index if not exists idx_user_stripe_customer_subscription on public.user_stripe (stripe_customer_id, stripe_subscription_id);
 create unique index if not exists uq_user_stripe_subscription_id on public.user_stripe (stripe_subscription_id) where stripe_subscription_id is not null;
-create unique index if not exists uq_user_stripe_customer_id on public.user_stripe (stripe_customer_id) where stripe_customer_id is not null;
 
 -- ===============================
 -- Table: public.recipient_emails

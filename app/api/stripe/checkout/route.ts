@@ -1,10 +1,109 @@
+// app/api/stripe/checkout/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { stripe } from "@/lib/stripe";
 import { supabaseAdmin } from "@/lib/supabase-admin";
+import type Stripe from "stripe";
 
 export const runtime = "nodejs";
 
 type Plan = "lite" | "business";
+
+const PRICE_ADDON_LITE = process.env.STRIPE_ADDON_PRICE_ID_LITE!;
+const PRICE_ADDON_BUSINESS = process.env.STRIPE_ADDON_PRICE_ID_BUSINESS!;
+
+const PL_LITE = process.env.NEXT_PUBLIC_PL_ADDON_LITE_SEAT || "";
+const PL_BUSINESS = process.env.NEXT_PUBLIC_PL_ADDON_BUS_SEAT || "";
+
+const ACTIVE_STATUSES: Stripe.Subscription.Status[] = [
+  "trialing",
+  "active",
+  "past_due",
+  "unpaid",
+];
+
+function pickPriceAndPL(plan: Plan) {
+  if (plan === "business") {
+    return {
+      priceId: PRICE_ADDON_BUSINESS,
+      paymentLink: PL_BUSINESS || undefined,
+      productLabel: "Business : 配信先追加",
+    } as const;
+  }
+  return {
+    priceId: PRICE_ADDON_LITE,
+    paymentLink: PL_LITE || undefined,
+    productLabel: "Lite : 配信先追加",
+  } as const;
+}
+
+async function getStripeCustomerIdFromDB(email?: string) {
+  if (!email) return undefined;
+  const { data, error } = await supabaseAdmin
+    .from("user_stripe")
+    .select("stripe_customer_id, updated_at")
+    .eq("email", email)
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) {
+    console.warn("[checkout] supabase lookup failed", error);
+    return undefined;
+  }
+  return (data as any)?.stripe_customer_id as string | undefined;
+}
+
+async function hasSavedPaymentMethod(customerId: string) {
+  const cust = (await stripe.customers.retrieve(customerId)) as Stripe.Customer;
+  if (cust?.invoice_settings?.default_payment_method) return true;
+  const pms = await stripe.paymentMethods.list({
+    customer: customerId,
+    type: "card",
+    limit: 1,
+  });
+  return pms.data.length > 0;
+}
+
+async function findAnyActiveSubscription(customerId: string) {
+  const subs = await stripe.subscriptions.list({
+    customer: customerId,
+    status: "all",
+    limit: 100,
+    expand: ["data.items.data.price"],
+  });
+  return subs.data.find((s) => ACTIVE_STATUSES.includes(s.status)) ?? null;
+}
+
+function findAddonItemsByPrice(
+  sub: Stripe.Subscription | null,
+  priceId: string
+): Stripe.SubscriptionItem[] {
+  if (!sub) return [];
+  return sub.items.data.filter((it) => {
+    const p: any = it.price as any;
+    const id = typeof p === "string" ? p : p?.id;
+    return id === priceId;
+  });
+}
+
+async function collapseAndPickPrimaryItem(
+  sub: Stripe.Subscription,
+  matches: Stripe.SubscriptionItem[]
+) {
+  // “同じ Price の item が複数存在する”場合に合算して一本化
+  if (matches.length === 0) return { primary: undefined as any, totalQty: 0 };
+  const primary = matches[0];
+  const others = matches.slice(1);
+  let totalQty = 0;
+  for (const it of matches) totalQty += it.quantity ?? 0;
+  for (const it of others) {
+    try {
+      await stripe.subscriptionItems.del(it.id);
+    } catch (e) {
+      console.warn("[checkout] collapse: delete extra item failed", e);
+    }
+  }
+  return { primary, totalQty };
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -13,513 +112,85 @@ export async function POST(req: NextRequest) {
       quantity: number;
       ownerEmail?: string;
       additionalEmails?: string[];
+      precheck?: boolean;
     };
 
+    // 入力正規化
     const plan = body?.plan;
-    // Normalize quantity to a safe integer within bounds
-    const quantity = Math.min(10, Math.max(1, Math.floor(Number(body?.quantity))));
-    const ownerEmail = (body?.ownerEmail || "").trim() || undefined;
-
     if (plan !== "lite" && plan !== "business") {
       return NextResponse.json({ error: "invalid plan" }, { status: 400 });
     }
-    if (!Number.isFinite(quantity) || quantity < 1 || quantity > 10) {
-      return NextResponse.json({ error: "invalid quantity" }, { status: 400 });
-    }
 
-    const priceId =
-      (plan === "lite" && process.env.STRIPE_ADDON_PRICE_ID_LITE) ||
-      (plan === "business" && process.env.STRIPE_ADDON_PRICE_ID_BUSINESS) ||
-      undefined;
-    if (!priceId) {
-      return NextResponse.json({ error: "missing price id" }, { status: 500 });
-    }
+    const quantity = Math.min(10, Math.max(1, Math.floor(Number(body?.quantity))));
 
-    // Determine session mode based on price type
+    const ownerEmail = (body?.ownerEmail || "").trim() || undefined;
+    const additionalEmailsRaw = Array.isArray(body?.additionalEmails)
+      ? body.additionalEmails
+      : [];
+
+    // 追加メールの有効件数をサーバーで再計算（UIと厳密一致）
+    const validAdditionalEmails = additionalEmailsRaw
+      .filter((e) => typeof e === "string" && /.+@.+\..+/.test(e.trim()))
+      .map((e) => e.trim());
+
+    const requestedQty = validAdditionalEmails.length > 0 ? validAdditionalEmails.length : quantity;
+    const qty = Math.min(10, Math.max(1, Math.floor(Number(requestedQty))));
+
+    const { priceId, paymentLink, productLabel } = pickPriceAndPL(plan);
+
+    // 価格タイプで Checkout mode を決める（通常は subscription）
     const price = await stripe.prices.retrieve(priceId);
     const mode: "payment" | "subscription" =
       (price as any)?.type === "recurring" ? "subscription" : "payment";
 
+    // URL
     const origin = req.nextUrl.origin;
     const baseUrl = process.env.NEXT_PUBLIC_APP_URL || origin;
     const success_url = `${baseUrl}/mypage?success=1`;
     const cancel_url = `${baseUrl}/mypage?canceled=1`;
 
-    let stripeCustomerId: string | undefined;
-    if (ownerEmail) {
-      try {
-        const { data } = await supabaseAdmin
-          .from("user_stripe")
-          .select("stripe_customer_id, updated_at")
-          .eq("email", ownerEmail)
-          .order("updated_at", { ascending: false })
-          .limit(1)
-          .maybeSingle();
-        stripeCustomerId = (data as any)?.stripe_customer_id ?? undefined;
-      } catch (err) {
-        console.warn("Failed to resolve stripe_customer_id for checkout", err);
-      }
-    }
+    // 顧客IDの解決（DB）
+    let stripeCustomerId = await getStripeCustomerIdFromDB(ownerEmail);
 
+    // メタデータ
     const metadata: Record<string, string> = { plan };
     if (ownerEmail) metadata.owner_email = ownerEmail;
-    const additionalEmails = Array.isArray(body?.additionalEmails)
-      ? body.additionalEmails.filter((e) => typeof e === "string" && /.+@.+\..+/.test(e.trim())).map((e) => e.trim())
-      : undefined;
-    if (additionalEmails && additionalEmails.length > 0) {
-      // Provide as JSON string so webhook can read from metadata.additional_emails
-      metadata.additional_emails = JSON.stringify(additionalEmails.slice(0, 20));
+    if (validAdditionalEmails.length > 0) {
+      metadata.additional_emails = JSON.stringify(validAdditionalEmails.slice(0, 20));
     }
 
-    let sessionUrl: string | undefined;
-
-    // If customer is known, try to UPDATE existing add-on quantity
-    // (independent of the configured price's type)
-    if (stripeCustomerId) {
-      try {
-        const subs = await stripe.subscriptions.list({
+    // PRECHECK: 副作用ゼロで判定だけ返す
+    if (body?.precheck) {
+      if (stripeCustomerId) {
+        const pmSaved = await hasSavedPaymentMethod(stripeCustomerId);
+        if (pmSaved) {
+          const sub = await findAnyActiveSubscription(stripeCustomerId);
+          const priceMatches = findAddonItemsByPrice(sub, priceId);
+          const currentQty = priceMatches.reduce((s, it) => s + (it.quantity ?? 0), 0) ?? 0;
+          return NextResponse.json({ canFinalizeSilently: true, currentQuantity: currentQty });
+        }
+        // Checkout Session を作成だけして URL を返す
+        const cs = await stripe.checkout.sessions.create({
+          mode,
+          line_items: [
+            { price: priceId, quantity: qty, adjustable_quantity: { enabled: true, minimum: 1, maximum: 10 } },
+          ],
+          success_url: `${baseUrl}/mypage?success=1&cs_id={CHECKOUT_SESSION_ID}`,
+          cancel_url,
           customer: stripeCustomerId,
-          status: "all",
-          limit: 20,
+          customer_email: stripeCustomerId ? undefined : ownerEmail,
+          metadata,
         });
-        const VALID = new Set(
-          (process.env.SUBSCRIPTION_VALID_STATUSES || "active,trialing")
-            .split(",")
-            .map((v) => v.trim().toLowerCase())
-            .filter(Boolean)
-        );
-
-        // Find a subscription that ALREADY has this add-on price
-        // Find a subscription that already contains an add-on item.
-        // Priority: Product ID match from env (per plan) > exact Price ID match > product.metadata.type==='add'
-        const ADDON_PRODUCT_IDS = new Set(
-          ((plan === "lite"
-            ? process.env.STRIPE_ADDON_PRODUCT_IDS_LITE
-            : process.env.STRIPE_ADDON_PRODUCT_IDS_BUSINESS) || "")
-            .split(",")
-            .map((s) => s.trim())
-            .filter(Boolean)
-        );
-        let targetSub: any | undefined;
-        let addonItem: any | undefined;
-        for (const s of subs.data as any[]) {
-          if (!VALID.has(String(s.status).toLowerCase())) continue;
-          const items = Array.isArray(s.items?.data) ? s.items.data : [];
-          // 1) Product ID match by env list (fast path when product id is present)
-          for (const it of items) {
-            const prodAny = it?.price?.product as any;
-            const productId: string | undefined = typeof prodAny === "string" ? prodAny : prodAny?.id;
-            if (productId && ADDON_PRODUCT_IDS.has(productId)) {
-              addonItem = it;
-              targetSub = s;
-              break;
-            }
-          }
-          if (targetSub && addonItem) break;
-          // 2) Try by exact price id match
-          addonItem = items.find((it: any) => it?.price?.id === priceId);
-          if (addonItem) {
-            targetSub = s;
-            break;
-          }
-          // 3) Fallback: try to detect by product metadata.type === 'add'
-          for (const it of items) {
-            try {
-              const p = it?.price?.product as any;
-              const productId: string | undefined = typeof p === "string" ? p : p?.id;
-              if (!productId) continue;
-              const product = await stripe.products.retrieve(productId);
-              const t = (product as any)?.metadata?.type;
-              if (t && String(t).toLowerCase() === "add") {
-                addonItem = it;
-                targetSub = s;
-                break;
-              }
-            } catch {}
-          }
-          if (targetSub && addonItem) break;
-        }
-
-        if (targetSub && addonItem) {
-          const currentQty =
-            typeof addonItem.quantity === "number" && !Number.isNaN(addonItem.quantity)
-              ? addonItem.quantity
-              : 0;
-          const newQty = currentQty + quantity;
-
-          // Update the existing subscription item quantity directly via API
-          await stripe.subscriptionItems.update(addonItem.id, {
-            quantity: newQty,
-            proration_behavior: "create_prorations",
-          } as any);
-
-          // Persist recipients immediately (no Checkout session will fire a webhook)
-          try {
-            // Resolve or create user_stripe row for this subscription
-            const nowIso = new Date().toISOString();
-            let userStripeId: number | undefined;
-            const found = await supabaseAdmin
-              .from("user_stripe")
-              .select("id")
-              .eq("stripe_subscription_id", targetSub.id)
-              .maybeSingle();
-            if (found.data?.id) {
-              userStripeId = found.data.id as number;
-              await supabaseAdmin
-                .from("user_stripe")
-                .update({ updated_at: nowIso, current_plan: plan })
-                .eq("id", userStripeId);
-            } else {
-              const ins = await supabaseAdmin
-                .from("user_stripe")
-                .insert({
-                  email: ownerEmail || null,
-                  stripe_customer_id: stripeCustomerId,
-                  stripe_subscription_id: targetSub.id,
-                  current_plan: plan,
-                  updated_at: nowIso,
-                })
-                .select("id")
-                .maybeSingle();
-              if (ins.data?.id) userStripeId = ins.data.id as number;
-            }
-
-            if (userStripeId && additionalEmails && additionalEmails.length > 0) {
-              const rows = additionalEmails.map((em) => ({
-                email: em,
-                user_stripe_id: userStripeId!,
-                plan,
-                pending_removal: false,
-                created_via: "addon" as const,
-              }));
-              const { error: recErr } = await supabaseAdmin
-                .from("recipient_emails")
-                .upsert(rows, { onConflict: "email" });
-              if (recErr) console.warn("[checkout] recipients upsert after update failed", recErr);
-            }
-          } catch (persistErr) {
-            console.warn("[checkout] post-update persistence failed", persistErr);
-          }
-
-          // Resolve product name for UI feedback
-          let productName: string | undefined;
-          try {
-            const prodAny = (addonItem as any)?.price?.product as any;
-            const productId: string | undefined = typeof prodAny === "string" ? prodAny : prodAny?.id;
-            if (productId) {
-              const product = await stripe.products.retrieve(productId);
-              productName = (product as any)?.name || undefined;
-            }
-          } catch {}
-
-          // Create Billing Portal session
-          const portal = await stripe.billingPortal.sessions.create({
-            customer: stripeCustomerId,
-            return_url: `${baseUrl}/mypage?updated=1`,
-          });
-
-          return NextResponse.json({
-            updated: true,
-            portalUrl: (portal as any)?.url,
-            productName: productName,
-            newQuantity: newQty,
-          });
-        }
-
-        // Case 2: subscription exists but no addon item yet -> create it and treat as updated flow
-        if (targetSub && !addonItem) {
-          // create new add-on item on existing subscription
-          const created = await stripe.subscriptionItems.create({
-            subscription: targetSub.id,
-            price: priceId as string,
-            quantity: quantity,
-            proration_behavior: "create_prorations",
-          } as any);
-
-          // Persist recipients immediately (no webhook for this flow)
-          try {
-            const nowIso = new Date().toISOString();
-            let userStripeId: number | undefined;
-            const found = await supabaseAdmin
-              .from("user_stripe")
-              .select("id")
-              .eq("stripe_subscription_id", targetSub.id)
-              .maybeSingle();
-            if (found.data?.id) {
-              userStripeId = found.data.id as number;
-              await supabaseAdmin
-                .from("user_stripe")
-                .update({ updated_at: nowIso, current_plan: plan })
-                .eq("id", userStripeId);
-            } else {
-              const ins = await supabaseAdmin
-                .from("user_stripe")
-                .insert({
-                  email: ownerEmail || null,
-                  stripe_customer_id: stripeCustomerId,
-                  stripe_subscription_id: targetSub.id,
-                  current_plan: plan,
-                  updated_at: nowIso,
-                })
-                .select("id")
-                .maybeSingle();
-              if (ins.data?.id) userStripeId = ins.data.id as number;
-            }
-
-            if (userStripeId && additionalEmails && additionalEmails.length > 0) {
-              const rows = additionalEmails.map((em) => ({
-                email: em,
-                user_stripe_id: userStripeId!,
-                plan,
-                pending_removal: false,
-                created_via: "addon" as const,
-              }));
-              const { error: recErr } = await supabaseAdmin
-                .from("recipient_emails")
-                .upsert(rows, { onConflict: "email" });
-              if (recErr) console.warn("[checkout] recipients upsert after create failed", recErr);
-            }
-          } catch (persistErr) {
-            console.warn("[checkout] post-create persistence failed", persistErr);
-          }
-
-          // Resolve product name for UI feedback
-          let productName: string | undefined;
-          try {
-            const prodAny = (created as any)?.price?.product as any;
-            const productId: string | undefined = typeof prodAny === "string" ? prodAny : prodAny?.id;
-            if (productId) {
-              const product = await stripe.products.retrieve(productId);
-              productName = (product as any)?.name || undefined;
-            }
-          } catch {}
-
-          const portal = await stripe.billingPortal.sessions.create({
-            customer: stripeCustomerId,
-            return_url: `${baseUrl}/mypage?updated=1`,
-          });
-
-          return NextResponse.json({
-            updated: true,
-            portalUrl: (portal as any)?.url,
-            productName: productName,
-            newQuantity: quantity,
-          });
-        }
-      } catch (e) {
-        console.warn("[checkout] failed to create update session", e);
+        return NextResponse.json({ url: (cs as any)?.url, isPaymentLink: false, openInSameTab: true });
       }
-    }
-
-    // First-time decision: if we can find a valid subscription with a saved payment method via email, update directly;
-    // otherwise instruct client to open a Payment Link in the same tab.
-    if (!stripeCustomerId && ownerEmail) {
-      try {
-        const searchLimit = Number(process.env.STRIPE_CUSTOMER_SEARCH_LIMIT || 3);
-        const customers = await stripe.customers.search({
-          query: `email:'${ownerEmail.replace(/'/g, " ")}'`,
-          limit: Number.isFinite(searchLimit) ? searchLimit : 3,
-        } as any);
-
-        const VALID = new Set(
-          (process.env.SUBSCRIPTION_VALID_STATUSES || "active,trialing")
-            .split(",")
-            .map((v) => v.trim().toLowerCase())
-            .filter(Boolean)
-        );
-
-        let targetSub: any | undefined;
-        let candidateCustomerId: string | undefined;
-        let addonItem: any | undefined;
-        let hasSavedPaymentMethod = false;
-
-        for (const c of customers.data) {
-          const subs = await stripe.subscriptions.list({ customer: c.id, status: "all", limit: 20 });
-          const cust = await stripe.customers.retrieve(c.id);
-          const customerDefaultPm: any = (cust as any)?.invoice_settings?.default_payment_method ?? null;
-          for (const s of subs.data as any[]) {
-            if (!VALID.has(String(s.status).toLowerCase())) continue;
-            const subDefaultPm: any = (s as any)?.default_payment_method ?? null;
-            if (subDefaultPm || customerDefaultPm) {
-              hasSavedPaymentMethod = true;
-              targetSub = s;
-              candidateCustomerId = c.id;
-              const items = Array.isArray(s.items?.data) ? s.items.data : [];
-              const ADDON_PRODUCT_IDS = new Set(
-                ((plan === "lite"
-                  ? process.env.STRIPE_ADDON_PRODUCT_IDS_LITE
-                  : process.env.STRIPE_ADDON_PRODUCT_IDS_BUSINESS) || "")
-                  .split(",")
-                  .map((s) => s.trim())
-                  .filter(Boolean)
-              );
-              addonItem = items.find((it: any) => {
-                const prodAny = it?.price?.product as any;
-                const productId: string | undefined = typeof prodAny === "string" ? prodAny : prodAny?.id;
-                return (productId && ADDON_PRODUCT_IDS.has(productId)) || it?.price?.id === priceId;
-              });
-              break;
-            }
-          }
-          if (hasSavedPaymentMethod) break;
-        }
-
-        if (hasSavedPaymentMethod && targetSub && candidateCustomerId) {
-          if (addonItem) {
-            const currentQty =
-              typeof addonItem.quantity === "number" && !Number.isNaN(addonItem.quantity)
-                ? addonItem.quantity
-                : 0;
-            const newQty = currentQty + quantity;
-            await stripe.subscriptionItems.update(addonItem.id, {
-              quantity: newQty,
-              proration_behavior: "create_prorations",
-            } as any);
-
-            try {
-              const nowIso = new Date().toISOString();
-              let userStripeId: number | undefined;
-              const found = await supabaseAdmin
-                .from("user_stripe")
-                .select("id")
-                .eq("stripe_subscription_id", targetSub.id)
-                .maybeSingle();
-              if (found.data?.id) {
-                userStripeId = found.data.id as number;
-                await supabaseAdmin
-                  .from("user_stripe")
-                  .update({ updated_at: nowIso, current_plan: plan, stripe_customer_id: candidateCustomerId })
-                  .eq("id", userStripeId);
-              } else {
-                const ins = await supabaseAdmin
-                  .from("user_stripe")
-                  .insert({
-                    email: ownerEmail || null,
-                    stripe_customer_id: candidateCustomerId,
-                    stripe_subscription_id: targetSub.id,
-                    current_plan: plan,
-                    updated_at: nowIso,
-                  })
-                  .select("id")
-                  .maybeSingle();
-                if (ins.data?.id) userStripeId = ins.data.id as number;
-              }
-              if (userStripeId && additionalEmails && additionalEmails.length > 0) {
-                const rows = additionalEmails.map((em) => ({
-                  email: em,
-                  user_stripe_id: userStripeId!,
-                  plan,
-                  pending_removal: false,
-                  created_via: "addon" as const,
-                }));
-                await supabaseAdmin.from("recipient_emails").upsert(rows, { onConflict: "email" });
-              }
-            } catch (persistErr) {
-              console.warn("[checkout:first] persist after update failed", persistErr);
-            }
-
-            let productName: string | undefined;
-            try {
-              const prodAny = (addonItem as any)?.price?.product as any;
-              const productId: string | undefined = typeof prodAny === "string" ? prodAny : prodAny?.id;
-              if (productId) {
-                const product = await stripe.products.retrieve(productId);
-                productName = (product as any)?.name || undefined;
-              }
-            } catch {}
-            const portal = await stripe.billingPortal.sessions.create({
-              customer: candidateCustomerId,
-              return_url: `${baseUrl}/mypage?updated=1`,
-            });
-            return NextResponse.json({ updated: true, portalUrl: (portal as any)?.url, productName, newQuantity: newQty });
-          } else {
-            const created = await stripe.subscriptionItems.create({
-              subscription: targetSub.id,
-              price: priceId as string,
-              quantity: quantity,
-              proration_behavior: "create_prorations",
-            } as any);
-            try {
-              const nowIso = new Date().toISOString();
-              let userStripeId: number | undefined;
-              const found = await supabaseAdmin
-                .from("user_stripe")
-                .select("id")
-                .eq("stripe_subscription_id", targetSub.id)
-                .maybeSingle();
-              if (found.data?.id) {
-                userStripeId = found.data.id as number;
-                await supabaseAdmin
-                  .from("user_stripe")
-                  .update({ updated_at: nowIso, current_plan: plan, stripe_customer_id: candidateCustomerId })
-                  .eq("id", userStripeId);
-              } else {
-                const ins = await supabaseAdmin
-                  .from("user_stripe")
-                  .insert({
-                    email: ownerEmail || null,
-                    stripe_customer_id: candidateCustomerId,
-                    stripe_subscription_id: targetSub.id,
-                    current_plan: plan,
-                    updated_at: nowIso,
-                  })
-                  .select("id")
-                  .maybeSingle();
-                if (ins.data?.id) userStripeId = ins.data.id as number;
-              }
-              if (userStripeId && additionalEmails && additionalEmails.length > 0) {
-                const rows = additionalEmails.map((em) => ({
-                  email: em,
-                  user_stripe_id: userStripeId!,
-                  plan,
-                  pending_removal: false,
-                  created_via: "addon" as const,
-                }));
-                await supabaseAdmin.from("recipient_emails").upsert(rows, { onConflict: "email" });
-              }
-            } catch (persistErr) {
-              console.warn("[checkout:first] persist after create failed", persistErr);
-            }
-
-            let productName: string | undefined;
-            try {
-              const prodAny = (created as any)?.price?.product as any;
-              const productId: string | undefined = typeof prodAny === "string" ? prodAny : prodAny?.id;
-              if (productId) {
-                const product = await stripe.products.retrieve(productId);
-                productName = (product as any)?.name || undefined;
-              }
-            } catch {}
-            const portal = await stripe.billingPortal.sessions.create({
-              customer: candidateCustomerId,
-              return_url: `${baseUrl}/mypage?updated=1`,
-            });
-            return NextResponse.json({ updated: true, portalUrl: (portal as any)?.url, productName, newQuantity: quantity });
-          }
-        }
-
-        const paymentLinkUrl =
-          (plan === "lite" && process.env.NEXT_PUBLIC_PL_ADDON_LITE_SEAT) ||
-          (plan === "business" && process.env.NEXT_PUBLIC_PL_ADDON_BUS_SEAT) ||
-          undefined;
-        if (paymentLinkUrl) {
-          return NextResponse.json({ url: paymentLinkUrl, isPaymentLink: true });
-        }
-      } catch (e) {
-        console.warn("[checkout:first] email probe failed", e);
+      // 顧客不明：Payment Link か Checkout を作るだけ
+      if (paymentLink) {
+        return NextResponse.json({ url: paymentLink, isPaymentLink: true, openInSameTab: true });
       }
-    }
-
-
-    if (!sessionUrl) {
-      const createSession = await stripe.checkout.sessions.create({
+      const cs = await stripe.checkout.sessions.create({
         mode,
         line_items: [
-          {
-            price: priceId,
-            quantity,
-            adjustable_quantity: { enabled: true, minimum: 1, maximum: 10 },
-          },
+          { price: priceId, quantity: qty, adjustable_quantity: { enabled: true, minimum: 1, maximum: 10 } },
         ],
         success_url,
         cancel_url,
@@ -527,14 +198,151 @@ export async function POST(req: NextRequest) {
         customer_email: stripeCustomerId ? undefined : ownerEmail,
         metadata,
       });
-      sessionUrl = (createSession as any)?.url;
+      return NextResponse.json({ url: (cs as any)?.url, isPaymentLink: false, openInSameTab: true });
     }
 
-return NextResponse.json({ url: sessionUrl });
-  } catch (e) {
+    // 本処理（更新を行う）
+    if (!stripeCustomerId) {
+      if (paymentLink) {
+        return NextResponse.json({ url: paymentLink, isPaymentLink: true, openInSameTab: true });
+      }
+      const cs = await stripe.checkout.sessions.create({
+        mode,
+        line_items: [
+          { price: priceId, quantity: qty, adjustable_quantity: { enabled: true, minimum: 1, maximum: 10 } },
+        ],
+        success_url,
+        cancel_url,
+        customer_email: ownerEmail,
+        metadata,
+      });
+      return NextResponse.json({ url: (cs as any)?.url, isPaymentLink: false, openInSameTab: true });
+    }
+
+    const pmSaved = await hasSavedPaymentMethod(stripeCustomerId);
+    const sub = await findAnyActiveSubscription(stripeCustomerId);
+    if (!pmSaved || !sub) {
+      if (paymentLink) {
+        return NextResponse.json({ url: paymentLink, isPaymentLink: true, openInSameTab: true });
+      }
+      const cs = await stripe.checkout.sessions.create({
+        mode,
+        line_items: [
+          { price: priceId, quantity: qty, adjustable_quantity: { enabled: true, minimum: 1, maximum: 10 } },
+        ],
+        success_url,
+        cancel_url,
+        customer: stripeCustomerId,
+        metadata,
+      });
+      return NextResponse.json({ url: (cs as any)?.url, isPaymentLink: false, openInSameTab: true });
+    }
+
+    // 非遷移で確定
+    const priceMatches = findAddonItemsByPrice(sub, priceId);
+    const { primary, totalQty } = await collapseAndPickPrimaryItem(sub, priceMatches);
+
+    const previousQuantity = totalQty ?? 0;
+    const newQuantity = previousQuantity + qty;
+
+    // 追加メールを recipient_emails に保存する補助
+    async function upsertRecipientsForAddons(opts: {
+      customerId: string;
+      ownerEmail?: string;
+      plan: Plan;
+      emails: string[];
+    }) {
+      const emails = Array.from(new Set((opts.emails || []).filter((e) => /.+@.+\..+/.test(e)))) as string[];
+      if (emails.length === 0) return;
+      let email = (opts.ownerEmail || "").trim() || undefined;
+      if (!email) {
+        try {
+          email = ((await stripe.customers.retrieve(opts.customerId)) as any)?.email ?? undefined;
+        } catch {}
+      }
+      // 親 user_stripe の解決（customer 基準、最新を採用）
+      let parentId: number | undefined;
+      const nowIso = new Date().toISOString();
+      try {
+        const found = await supabaseAdmin
+          .from("user_stripe")
+          .select("id")
+          .eq("stripe_customer_id", opts.customerId)
+          .order("updated_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (!found.error && found.data?.id) {
+          parentId = found.data.id;
+          if (email) {
+            await supabaseAdmin.from("user_stripe").update({ email, updated_at: nowIso }).eq("id", parentId);
+          }
+        } else if (email) {
+          const ins = await supabaseAdmin
+            .from("user_stripe")
+            .insert({ email, stripe_customer_id: opts.customerId, updated_at: nowIso })
+            .select("id")
+            .maybeSingle();
+          parentId = ins.data?.id as number | undefined;
+        }
+      } catch (e) {
+        console.warn("[checkout] upsertRecipients: parent resolve failed", e);
+      }
+      if (!parentId) return;
+      const rows = emails.map((em) => ({ email: em, user_stripe_id: parentId!, plan: opts.plan, created_via: "addon" }));
+      // Do not overwrite existing recipient rows; only insert if not exists
+      const { error } = await supabaseAdmin
+        .from("recipient_emails")
+        .upsert(rows, { onConflict: "email", ignoreDuplicates: true });
+      if (error) console.error("[checkout] upsertRecipients error", error);
+    }
+
+    if (primary) {
+      // 既存 item の数量を加算
+      const updated = await stripe.subscriptionItems.update(primary.id, {
+        quantity: newQuantity,
+        proration_behavior: "create_prorations",
+      });
+      if (validAdditionalEmails.length > 0 && stripeCustomerId) {
+        await upsertRecipientsForAddons({ customerId: stripeCustomerId, ownerEmail, plan, emails: validAdditionalEmails });
+      }
+      const portal = await stripe.billingPortal.sessions.create({
+        customer: stripeCustomerId,
+        return_url: `${baseUrl}/mypage?updated=1`,
+      });
+      return NextResponse.json({
+        updated: true,
+        portalUrl: (portal as any)?.url,
+        productName: productLabel,
+        newQuantity: updated.quantity ?? newQuantity,
+        addedQuantity: qty,
+        previousQuantity,
+      });
+    } else {
+      // 同じ Price の item が無ければ新規作成
+      const created = await stripe.subscriptionItems.create({
+        subscription: sub.id,
+        price: priceId,
+        quantity: qty,
+        proration_behavior: "create_prorations",
+      });
+      if (validAdditionalEmails.length > 0 && stripeCustomerId) {
+        await upsertRecipientsForAddons({ customerId: stripeCustomerId, ownerEmail, plan, emails: validAdditionalEmails });
+      }
+      const portal = await stripe.billingPortal.sessions.create({
+        customer: stripeCustomerId,
+        return_url: `${baseUrl}/mypage?updated=1`,
+      });
+      return NextResponse.json({
+        updated: true,
+        portalUrl: (portal as any)?.url,
+        productName: productLabel,
+        newQuantity: created.quantity ?? qty,
+        addedQuantity: qty,
+        previousQuantity,
+      });
+    }
+  } catch (e: any) {
     console.error("/api/stripe/checkout error:", e);
-    return NextResponse.json({ error: "failed" }, { status: 500 });
+    return NextResponse.json({ error: e?.message || "failed" }, { status: 500 });
   }
 }
-
-

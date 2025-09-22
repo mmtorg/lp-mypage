@@ -27,8 +27,10 @@ export async function POST(request: NextRequest) {
     if (email) {
       const { data: byEmail, error: byEmailErr } = await supabaseAdmin
         .from("user_stripe")
-        .select("stripe_customer_id, email")
+        .select("stripe_customer_id, email, updated_at")
         .eq("email", email)
+        .order("updated_at", { ascending: false })
+        .limit(1)
         .maybeSingle();
       if (byEmailErr) console.warn("/portal: user_stripe by email error", byEmailErr);
       stripeCustomerId = byEmail?.stripe_customer_id ?? undefined;
@@ -47,13 +49,26 @@ export async function POST(request: NextRequest) {
         if (c?.id) {
           stripeCustomerId = c.id;
           // 補完保存（冪等）
-          await supabaseAdmin
-            .from("user_stripe")
-            .insert({
-              email: targetEmail,
-              stripe_customer_id: stripeCustomerId,
-              updated_at: new Date().toISOString(),
-            });
+          // DB側に customer 一意制約が無い想定のため、明示的に select→update/insert で対応
+          try {
+            const { data: existing } = await supabaseAdmin
+              .from("user_stripe")
+              .select("id")
+              .eq("stripe_customer_id", stripeCustomerId)
+              .order("updated_at", { ascending: false })
+              .limit(1)
+              .maybeSingle();
+            if (existing?.id) {
+              await supabaseAdmin
+                .from("user_stripe")
+                .update({ email: targetEmail, updated_at: new Date().toISOString() })
+                .eq("id", existing.id);
+            } else {
+              await supabaseAdmin
+                .from("user_stripe")
+                .insert({ email: targetEmail, stripe_customer_id: stripeCustomerId, updated_at: new Date().toISOString() });
+            }
+          } catch {}
         }
       } catch (e) {
         console.warn("/portal: stripe customer search failed", e);

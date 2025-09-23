@@ -353,7 +353,7 @@ function ResolvedView({
           <CardDescription>{email}</CardDescription>
         </CardHeader>
         <CardContent>
-          <NoSubscription />
+          <NoSubscription onReset={onReset} />
         </CardContent>
       </Card>
     );
@@ -1444,7 +1444,7 @@ function formatCurrency(amount: number, currency?: string) {
   }
 }
 
-function NoSubscription() {
+function NoSubscription({ onReset }: { onReset: () => void }) {
   return (
     <div className="space-y-4">
       <p className="text-gray-700">
@@ -1452,6 +1452,9 @@ function NoSubscription() {
       </p>
       <Button asChild className="w-full">
         <a href="/">トップページへ</a>
+      </Button>
+      <Button variant="outline" onClick={onReset} className="w-full">
+        戻る
       </Button>
     </div>
   );

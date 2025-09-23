@@ -528,6 +528,14 @@ function AddRecipientsModal({
   const [awaitingCheckoutRedirect, setAwaitingCheckoutRedirect] =
     useState(false);
 
+  const isFirstTimeAddonPurchase = useMemo(
+    () =>
+      existingRecipients.filter(
+        (r) => !r.is_owner && (r.created_via ?? "").toLowerCase() === "addon"
+      ).length === 0,
+    [existingRecipients]
+  );
+
   useEffect(() => {
     if (!open && !suspendReset) {
       setCount(1);
@@ -604,7 +612,6 @@ function AddRecipientsModal({
     !saving &&
     !prechecking;
 
-  // ===== プリチェック付き：「追加購入へ進む」を押した時点で初期表示を決める =====
   const handleOpenConfirm = async () => {
     if (!canSubmit) return;
 
@@ -612,48 +619,45 @@ function AddRecipientsModal({
     setCheckoutUrl("");
     setAwaitingCheckoutRedirect(false);
 
-    try {
-      setPrechecking(true);
-      const payload = emails.map((v) => v.trim()).filter(Boolean);
-      const res = await fetch("/api/stripe/checkout", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          plan,
-          quantity: count,
-          ownerEmail: email,
-          additionalEmails: payload,
-          precheck: true, // ★プリチェック
-        }),
-      });
-      const data = await res.json();
+    if (isFirstTimeAddonPurchase) {
+      // First time flow (needs redirect)
+      try {
+        setPrechecking(true);
+        const payload = emails.map((v) => v.trim()).filter(Boolean);
+        const res = await fetch("/api/stripe/checkout", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            plan,
+            quantity: count,
+            ownerEmail: email,
+            additionalEmails: payload,
+            precheck: true,
+          }),
+        });
+        const data = await res.json();
 
-      // ★ ここを変更：2回目以降でも必ず確認モーダルを挟む
-      if (data?.canFinalizeSilently) {
-        // サイレント確定はせず、確認モーダルを開くだけ
-        setAwaitingCheckoutRedirect(false); // 「決済画面へ」ボタンではなく「OK」ボタン表示
+        if (data?.url) {
+          setCheckoutUrl(String(data.url));
+        }
+        if (data?.isPaymentLink || data?.openInSameTab) {
+          setAwaitingCheckoutRedirect(true);
+        }
+
         setSuspendReset(true);
-        setOpen(false); // 入力モーダルを閉じる
-        setConfirmOpen(true); // 確認モーダルを開く
-        return;
+        setOpen(false);
+        setConfirmOpen(true);
+      } catch (e) {
+        setError("エラーが発生しました");
+      } finally {
+        setPrechecking(false);
       }
-
-      // 初回（決済画面が必要）→ 最初から差し替え版で開く
-      if (data?.url) {
-        setCheckoutUrl(String(data.url));
-      }
-      if (data?.isPaymentLink || data?.openInSameTab) {
-        setAwaitingCheckoutRedirect(true);
-      }
-
-      // メインモーダルを閉じて確認モーダルを開く
+    } else {
+      // Subsequent flow (silent)
+      setAwaitingCheckoutRedirect(false); // Show "OK" button
       setSuspendReset(true);
       setOpen(false);
       setConfirmOpen(true);
-    } catch (e) {
-      setError("エラーが発生しました");
-    } finally {
-      setPrechecking(false);
     }
   };
 

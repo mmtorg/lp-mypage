@@ -63,6 +63,31 @@ async function hasSavedPaymentMethod(customerId: string) {
   return pms.data.length > 0;
 }
 
+async function hasExistingAddonRecipients(email: string): Promise<boolean> {
+  if (!email) return false;
+  try {
+    const { data: userStripeRows, error: userStripeError } =
+      await supabaseAdmin.from("user_stripe").select("id").eq("email", email);
+    if (userStripeError || !userStripeRows || userStripeRows.length === 0) {
+      return false;
+    }
+    const userStripeIds = userStripeRows.map((row) => row.id);
+    const { data: recipientRows, error: recipientError } = await supabaseAdmin
+      .from("recipient_emails")
+      .select("created_via")
+      .in("user_stripe_id", userStripeIds);
+    if (recipientError || !recipientRows) {
+      return false;
+    }
+    return recipientRows.some(
+      (row) => (row.created_via ?? "").toLowerCase() === "addon"
+    );
+  } catch (e) {
+    console.warn("[checkout] hasExistingAddonRecipients failed", e);
+    return false;
+  }
+}
+
 async function findAnyActiveSubscription(customerId: string) {
   const subs = await stripe.subscriptions.list({
     customer: customerId,
@@ -161,19 +186,32 @@ export async function POST(req: NextRequest) {
 
     // PRECHECK: 副作用ゼロで判定だけ返す
     if (body?.precheck) {
+      const hasAddons =
+        ownerEmail && (await hasExistingAddonRecipients(ownerEmail));
+
       if (stripeCustomerId) {
         const pmSaved = await hasSavedPaymentMethod(stripeCustomerId);
-        if (pmSaved) {
+
+        if (pmSaved && hasAddons) {
           const sub = await findAnyActiveSubscription(stripeCustomerId);
           const priceMatches = findAddonItemsByPrice(sub, priceId);
-          const currentQty = priceMatches.reduce((s, it) => s + (it.quantity ?? 0), 0) ?? 0;
-          return NextResponse.json({ canFinalizeSilently: true, currentQuantity: currentQty });
+          const currentQty =
+            priceMatches.reduce((s, it) => s + (it.quantity ?? 0), 0) ?? 0;
+          return NextResponse.json({
+            canFinalizeSilently: true,
+            currentQuantity: currentQty,
+          });
         }
-        // Checkout Session を作成だけして URL を返す
+
+        // 強制リダイレクトケース
         const cs = await stripe.checkout.sessions.create({
           mode,
           line_items: [
-            { price: priceId, quantity: qty, adjustable_quantity: { enabled: true, minimum: 1, maximum: 10 } },
+            {
+              price: priceId,
+              quantity: qty,
+              adjustable_quantity: { enabled: true, minimum: 1, maximum: 10 },
+            },
           ],
           success_url: `${baseUrl}/mypage?success=1&cs_id={CHECKOUT_SESSION_ID}`,
           cancel_url,
@@ -181,16 +219,29 @@ export async function POST(req: NextRequest) {
           customer_email: stripeCustomerId ? undefined : ownerEmail,
           metadata,
         });
-        return NextResponse.json({ url: (cs as any)?.url, isPaymentLink: false, openInSameTab: true });
+        return NextResponse.json({
+          url: (cs as any)?.url,
+          isPaymentLink: false,
+          openInSameTab: true,
+        });
       }
+
       // 顧客不明：Payment Link か Checkout を作るだけ
       if (paymentLink) {
-        return NextResponse.json({ url: paymentLink, isPaymentLink: true, openInSameTab: true });
+        return NextResponse.json({
+          url: paymentLink,
+          isPaymentLink: true,
+          openInSameTab: true,
+        });
       }
       const cs = await stripe.checkout.sessions.create({
         mode,
         line_items: [
-          { price: priceId, quantity: qty, adjustable_quantity: { enabled: true, minimum: 1, maximum: 10 } },
+          {
+            price: priceId,
+            quantity: qty,
+            adjustable_quantity: { enabled: true, minimum: 1, maximum: 10 },
+          },
         ],
         success_url,
         cancel_url,
@@ -198,7 +249,11 @@ export async function POST(req: NextRequest) {
         customer_email: stripeCustomerId ? undefined : ownerEmail,
         metadata,
       });
-      return NextResponse.json({ url: (cs as any)?.url, isPaymentLink: false, openInSameTab: true });
+      return NextResponse.json({
+        url: (cs as any)?.url,
+        isPaymentLink: false,
+        openInSameTab: true,
+      });
     }
 
     // 本処理（更新を行う）
@@ -219,9 +274,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ url: (cs as any)?.url, isPaymentLink: false, openInSameTab: true });
     }
 
+    const hasAddons =
+      ownerEmail && (await hasExistingAddonRecipients(ownerEmail));
     const pmSaved = await hasSavedPaymentMethod(stripeCustomerId);
     const sub = await findAnyActiveSubscription(stripeCustomerId);
-    if (!pmSaved || !sub) {
+    if (!pmSaved || !sub || !hasAddons) {
       if (paymentLink) {
         return NextResponse.json({ url: paymentLink, isPaymentLink: true, openInSameTab: true });
       }

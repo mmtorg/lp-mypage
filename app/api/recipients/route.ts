@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+﻿import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { stripe } from "@/lib/stripe";
 
@@ -63,7 +63,14 @@ function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
-async function resolveOwnerContext(ownerEmailRaw: string): Promise<OwnerContext> {
+function getAppOrigin(req: NextRequest): string | undefined {
+  // 優先: NEXT_PUBLIC_APP_ORIGIN（環境変数）。無ければリクエストのオリジン
+  return process.env.NEXT_PUBLIC_APP_ORIGIN || req.nextUrl?.origin;
+}
+
+async function resolveOwnerContext(
+  ownerEmailRaw: string
+): Promise<OwnerContext> {
   const ownerEmail = ownerEmailRaw.trim();
   const normalizedOwner = normalizeEmail(ownerEmail);
   let plan: Plan = null;
@@ -72,12 +79,16 @@ async function resolveOwnerContext(ownerEmailRaw: string): Promise<OwnerContext>
   try {
     const { data, error } = await supabaseAdmin
       .from("user_stripe")
-      .select("id, email, stripe_customer_id, stripe_subscription_id, current_plan, updated_at")
+      .select(
+        "id, email, stripe_customer_id, stripe_subscription_id, current_plan, updated_at"
+      )
       .eq("email", ownerEmail);
     if (error) throw error;
     userStripeRows = (data ?? []) as UserStripeRow[];
     // 代表プラン（何れかが設定されていれば優先）
-    plan = (userStripeRows.find((r) => r.current_plan)?.current_plan as Plan) ?? null;
+    plan =
+      (userStripeRows.find((r) => r.current_plan)?.current_plan as Plan) ??
+      null;
   } catch (err) {
     console.warn("resolveOwnerContext: failed to fetch user_stripe", err);
   }
@@ -96,9 +107,15 @@ async function fetchRecipientRows(ctx: OwnerContext): Promise<RecipientRow[]> {
   return (data ?? []) as RecipientRow[];
 }
 
-function toRecipientPayload(rows: RecipientRow[], normalizedOwner: string): RecipientPayload[] {
+function toRecipientPayload(
+  rows: RecipientRow[],
+  normalizedOwner: string
+): RecipientPayload[] {
   return rows
-    .filter((row): row is RecipientRow & { email: string } => typeof row.email === "string" && row.email.length > 0)
+    .filter(
+      (row): row is RecipientRow & { email: string } =>
+        typeof row.email === "string" && row.email.length > 0
+    )
     .map((row) => ({
       email: row.email,
       created_via:
@@ -113,7 +130,10 @@ function toRecipientPayload(rows: RecipientRow[], normalizedOwner: string): Reci
 }
 
 function countActiveAddonRecipients(rows: RecipientRow[]): number {
-  return rows.filter((row) => (row.created_via ?? "").toLowerCase() === "addon" && !row.pending_removal).length;
+  return rows.filter(
+    (row) =>
+      (row.created_via ?? "").toLowerCase() === "addon" && !row.pending_removal
+  ).length;
 }
 
 export async function POST(req: NextRequest) {
@@ -158,12 +178,17 @@ export async function POST(req: NextRequest) {
     const ctx = await resolveOwnerContext(ownerEmail);
     const effectivePlan: Plan = plan ?? ctx.plan ?? null;
     if (!ctx.userStripeRows.length) {
-      return NextResponse.json({ error: "契約情報が見つかりませんでした" }, { status: 404 });
+      return NextResponse.json(
+        { error: "契約情報が見つかりませんでした" },
+        { status: 404 }
+      );
     }
 
     // 紐付け対象 user_stripe は、updated_at が最新の行を代表として使用
-    const parent = [...ctx.userStripeRows]
-      .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())[0];
+    const parent = [...ctx.userStripeRows].sort(
+      (a, b) =>
+        new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+    )[0];
     // 追加登録分のみ保存（所有者メールは除外）
     const addonEmails = Array.from(new Set(cleaned));
     const rows = addonEmails.map((email) => ({
@@ -246,7 +271,9 @@ export async function PATCH(req: NextRequest) {
       );
     }
 
-    const target = rows.find((row) => (row.email ?? "").toLowerCase() === normalizedFrom);
+    const target = rows.find(
+      (row) => (row.email ?? "").toLowerCase() === normalizedFrom
+    );
     if (!target || typeof target.email !== "string") {
       return NextResponse.json(
         { error: "対象のメールアドレスが見つかりません" },
@@ -268,7 +295,13 @@ export async function PATCH(req: NextRequest) {
       );
     }
 
-    if (rows.some((row) => row.id !== target.id && (row.email ?? "").toLowerCase() === normalizedTo)) {
+    if (
+      rows.some(
+        (row) =>
+          row.id !== target.id &&
+          (row.email ?? "").toLowerCase() === normalizedTo
+      )
+    ) {
       return NextResponse.json(
         { error: "既に同じメールアドレスが登録されています" },
         { status: 409 }
@@ -305,7 +338,9 @@ export async function PATCH(req: NextRequest) {
 
 export async function DELETE(req: NextRequest) {
   try {
-    const body = (await req.json()) as DeleteRecipientsBody & { owner_email?: string };
+    const body = (await req.json()) as DeleteRecipientsBody & {
+      owner_email?: string;
+    };
     const ownerEmail = (body.ownerEmail ?? body.owner_email ?? "").trim();
 
     let targets: string[] = [];
@@ -318,7 +353,10 @@ export async function DELETE(req: NextRequest) {
       .map((value) => (typeof value === "string" ? value.trim() : ""))
       .filter(Boolean);
 
-    if (!isEmail(ownerEmail) || targets.some((candidate) => !isEmail(candidate))) {
+    if (
+      !isEmail(ownerEmail) ||
+      targets.some((candidate) => !isEmail(candidate))
+    ) {
       return NextResponse.json(
         { error: "メールアドレスの形式が正しくありません" },
         { status: 400 }
@@ -346,7 +384,9 @@ export async function DELETE(req: NextRequest) {
     const skipped: string[] = [];
 
     for (const targetEmail of normalizedTargets) {
-      const row = rows.find((item) => (item.email ?? "").toLowerCase() === targetEmail);
+      const row = rows.find(
+        (item) => (item.email ?? "").toLowerCase() === targetEmail
+      );
       if (!row || typeof row.email !== "string") {
         skipped.push(targetEmail);
         continue;
@@ -370,10 +410,17 @@ export async function DELETE(req: NextRequest) {
     }
 
     // First adjust Stripe (decrement quantity / cancel when needed). Only on success we alter DB
-    const stripeOk = await adjustStripeForDeletion(rows, markIds, ctx.userStripeRows);
+    const stripeOk = await adjustStripeForDeletion(
+      rows,
+      markIds,
+      ctx.userStripeRows
+    );
     if (!stripeOk) {
       return NextResponse.json(
-        { error: "Stripe側の数量変更に失敗しました。時間を置いて再度お試しください。" },
+        {
+          error:
+            "Stripe側の数量変更に失敗しました。時間を置いて再度お試しください。",
+        },
         { status: 502 }
       );
     }
@@ -395,12 +442,42 @@ export async function DELETE(req: NextRequest) {
     const updatedRows = await fetchRecipientRows(ctx);
     const recipients = toRecipientPayload(updatedRows, ctx.normalizedOwner);
 
+    // ここから追加：Billing Portal セッションを作成し、portalUrl を返す
+    let portalUrl: string | undefined;
+    try {
+      // updated_at が最新の user_stripe を代表にして customerId を取得
+      const parent = [...ctx.userStripeRows].sort(
+        (a, b) =>
+          new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+      )[0];
+      const customerId = parent?.stripe_customer_id || undefined;
+
+      if (customerId) {
+        const origin = getAppOrigin(req);
+        if (origin) {
+          const returnUrl = new URL("/mypage", origin).toString();
+          const portal = await stripe.billingPortal.sessions.create({
+            customer: customerId,
+            return_url: returnUrl,
+          });
+          portalUrl = portal?.url;
+        }
+      }
+    } catch (e) {
+      // 失敗しても処理は継続（portalUrl を返さないだけ）
+      console.warn(
+        "[recipients:DELETE] failed to create billing portal session",
+        e
+      );
+    }
+
     return NextResponse.json({
       ok: true,
       deleted: markIds.length,
       skipped,
       remaining_addon_count: countActiveAddonRecipients(updatedRows),
       recipients,
+      ...(portalUrl ? { portalUrl } : {}), // portalUrl が取れたときだけ返却
     });
   } catch (err) {
     console.error("/api/recipients DELETE error:", err);
@@ -408,9 +485,14 @@ export async function DELETE(req: NextRequest) {
   }
 }
 
-async function adjustStripeForDeletion(rows: RecipientRow[], markIds: number[], userStripeRows: UserStripeRow[]): Promise<boolean> {
+async function adjustStripeForDeletion(
+  rows: RecipientRow[],
+  markIds: number[],
+  userStripeRows: UserStripeRow[]
+): Promise<boolean> {
   // Build current active addon counts per subscription and removal counts for target rows
-  const isAddon = (row: RecipientRow) => (row.created_via ?? "").toLowerCase() === "addon";
+  const isAddon = (row: RecipientRow) =>
+    (row.created_via ?? "").toLowerCase() === "addon";
 
   const activeBySub = new Map<string, number>();
   const removeBySub = new Map<string, number>();
@@ -424,7 +506,9 @@ async function adjustStripeForDeletion(rows: RecipientRow[], markIds: number[], 
   }
 
   for (const row of rows) {
-    const subId = row.user_stripe_id ? subIdByUserStripeId.get(row.user_stripe_id) : undefined;
+    const subId = row.user_stripe_id
+      ? subIdByUserStripeId.get(row.user_stripe_id)
+      : undefined;
     if (!subId) continue;
     if (isAddon(row) && !row.pending_removal) {
       activeBySub.set(subId, (activeBySub.get(subId) ?? 0) + 1);
@@ -437,15 +521,21 @@ async function adjustStripeForDeletion(rows: RecipientRow[], markIds: number[], 
   if (removeBySub.size === 0) return true; // nothing to do
 
   const ADDON_PRICE_IDS = new Set(
-    [process.env.STRIPE_ADDON_PRICE_ID_LITE, process.env.STRIPE_ADDON_PRICE_ID_BUSINESS]
-      .filter((v): v is string => typeof v === "string" && !!v)
-  );
-  const ADDON_PRODUCT_IDS = new Set(
     [
-      ...(process.env.STRIPE_ADDON_PRODUCT_IDS_LITE || "").split(",").map((s) => s.trim()).filter(Boolean),
-      ...(process.env.STRIPE_ADDON_PRODUCT_IDS_BUSINESS || "").split(",").map((s) => s.trim()).filter(Boolean),
-    ]
+      process.env.STRIPE_ADDON_PRICE_ID_LITE,
+      process.env.STRIPE_ADDON_PRICE_ID_BUSINESS,
+    ].filter((v): v is string => typeof v === "string" && !!v)
   );
+  const ADDON_PRODUCT_IDS = new Set([
+    ...(process.env.STRIPE_ADDON_PRODUCT_IDS_LITE || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+    ...(process.env.STRIPE_ADDON_PRODUCT_IDS_BUSINESS || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+  ]);
 
   let failed = false;
   for (const [subId, removeCount] of removeBySub.entries()) {
@@ -454,15 +544,20 @@ async function adjustStripeForDeletion(rows: RecipientRow[], markIds: number[], 
 
     try {
       const sub: any = await stripe.subscriptions.retrieve(subId);
-      const items: any[] = Array.isArray(sub?.items?.data) ? sub.items.data : [];
-      let addonItem: any | undefined = items.find((it: any) => ADDON_PRICE_IDS.has(it?.price?.id));
+      const items: any[] = Array.isArray(sub?.items?.data)
+        ? sub.items.data
+        : [];
+      let addonItem: any | undefined = items.find((it: any) =>
+        ADDON_PRICE_IDS.has(it?.price?.id)
+      );
 
       // Priority 2: Product ID match via env
       if (!addonItem && ADDON_PRODUCT_IDS.size > 0) {
         for (const it of items) {
           try {
             const p = it?.price?.product as any;
-            const productId: string | undefined = typeof p === "string" ? p : p?.id;
+            const productId: string | undefined =
+              typeof p === "string" ? p : p?.id;
             if (productId && ADDON_PRODUCT_IDS.has(productId)) {
               addonItem = it;
               break;
@@ -476,7 +571,8 @@ async function adjustStripeForDeletion(rows: RecipientRow[], markIds: number[], 
         for (const it of items) {
           try {
             const p = it?.price?.product as any;
-            const productId: string | undefined = typeof p === "string" ? p : p?.id;
+            const productId: string | undefined =
+              typeof p === "string" ? p : p?.id;
             if (!productId) continue;
             const product = await stripe.products.retrieve(productId);
             const t = (product as any)?.metadata?.type;
@@ -489,29 +585,45 @@ async function adjustStripeForDeletion(rows: RecipientRow[], markIds: number[], 
       }
 
       if (!addonItem) {
-        console.warn("[recipients:DELETE] no addon item found on subscription", subId);
+        console.warn(
+          "[recipients:DELETE] no addon item found on subscription",
+          subId
+        );
         continue;
       }
 
       if (nextQty > 0) {
-        await stripe.subscriptionItems.update(addonItem.id, { quantity: nextQty });
-        console.log("[recipients:DELETE] updated addon quantity", { subId, nextQty });
+        await stripe.subscriptionItems.update(addonItem.id, {
+          quantity: nextQty,
+        });
+        console.log("[recipients:DELETE] updated addon quantity", {
+          subId,
+          nextQty,
+        });
       } else {
         // If subscription has only the addon item, cancel entire subscription; otherwise remove the item only
         const hasOtherItems = items.some((it) => it.id !== addonItem.id);
         if (hasOtherItems) {
           await stripe.subscriptionItems.del(addonItem.id);
-          console.log("[recipients:DELETE] removed addon item from subscription", { subId });
+          console.log(
+            "[recipients:DELETE] removed addon item from subscription",
+            { subId }
+          );
         } else {
           await stripe.subscriptions.cancel(subId);
-          console.log("[recipients:DELETE] canceled addon-only subscription", { subId });
+          console.log("[recipients:DELETE] canceled addon-only subscription", {
+            subId,
+          });
         }
       }
     } catch (e) {
-      console.warn("[recipients:DELETE] failed to update subscription", { subId, removeCount, nextQty }, e);
+      console.warn(
+        "[recipients:DELETE] failed to update subscription",
+        { subId, removeCount, nextQty },
+        e
+      );
       failed = true;
     }
   }
   return !failed;
 }
-

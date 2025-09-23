@@ -461,7 +461,6 @@ function ResolvedView({
             <DeleteRecipientsModal
               ownerEmail={email}
               addonRecipients={addonRecipients}
-              manageUrl={manageUrl}
               onSuccess={setRecipientList}
             />
           </div>
@@ -472,10 +471,19 @@ function ResolvedView({
             サブスクリプションの管理
           </h3>
           <div className="space-y-2 rounded-md bg-gray-50 p-4 text-sm text-gray-600">
-            <p>サブスクリプションの管理では以下の操作が行えます。</p>
-            <ul className="list-disc pl-5">
-              <li>請求情報の確認</li>
-              <li>サブスクリプションの解約</li>
+            <ul className="list-disc pl-5 space-y-1">
+              <li>
+                サブスクリプションの解約
+                <ul className="list-none">
+                  <li>
+                    プラン変更をご希望の場合は、一度現在のサブスクリプションを解約し、
+                    新しいプランを購入してください。
+                  </li>
+                </ul>
+              </li>
+              <li>請求書・領収書ダウンロード</li>
+              <li>請求履歴の確認</li>
+              <li>請求先情報の確認・更新</li>
             </ul>
           </div>
           <PortalButton email={email} />
@@ -1139,7 +1147,6 @@ type DeleteRecipientsModalProps = {
 function DeleteRecipientsModal({
   ownerEmail,
   addonRecipients,
-  manageUrl,
   onSuccess,
 }: DeleteRecipientsModalProps) {
   const { toast } = useToast();
@@ -1152,6 +1159,12 @@ function DeleteRecipientsModal({
   const [deleting, setDeleting] = useState(false);
   const [postDeleteOpen, setPostDeleteOpen] = useState(false);
   const [skipResetOnce, setSkipResetOnce] = useState(false);
+  const [portalUrl, setPortalUrl] = useState<string>("");
+  const [isCancellingSubscription, setIsCancellingSubscription] =
+    useState(false);
+
+  const isDeletingAllAddonRecipients =
+    addonRecipients.length > 0 && selected.size === addonRecipients.length;
 
   useEffect(() => {
     if (!open) {
@@ -1164,6 +1177,8 @@ function DeleteRecipientsModal({
       setError(null);
       setHasMarked(false);
       setSelected(new Set());
+      setPortalUrl("");
+      setIsCancellingSubscription(false);
     }
   }, [open, skipResetOnce, confirmDeleteOpen, postDeleteOpen]);
 
@@ -1202,6 +1217,11 @@ function DeleteRecipientsModal({
       const data = await res.json();
       if (Array.isArray(data?.recipients)) {
         onSuccess(data.recipients as RecipientInfo[]);
+      }
+      // ★ portalUrl を API レスポンスから取得
+      if (data && typeof data === "object" && "portalUrl" in data) {
+        const p = String((data as Record<string, unknown>).portalUrl || "");
+        setPortalUrl(p);
       }
       setHasMarked(true);
       setSelected(new Set());
@@ -1305,13 +1325,14 @@ function DeleteRecipientsModal({
             <Button
               variant="outline"
               onClick={() => {
+                setIsCancellingSubscription(isDeletingAllAddonRecipients);
                 setSkipResetOnce(true);
                 setConfirmDeleteOpen(true); // 先に true にする
                 setOpen(false); // 後から親を閉じる
               }}
               disabled={selected.size === 0 || Boolean(pendingEmail)}
             >
-              選択した配信先を削除（数量自動調整）
+              選択した配信先を削除
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1328,9 +1349,16 @@ function DeleteRecipientsModal({
           <DialogHeader>
             <DialogTitle className="text-lg font-bold">削除確認</DialogTitle>
             <DialogDescription className="mb-6">
-              選択した {selected.size} 件の配信先を削除します。
-              <br />
-              サブスクリプションの数量が {selected.size} 件マイナスされます。
+              {isDeletingAllAddonRecipients ? (
+                "全ての配信先を削除します。配信先追加のサブスクリプションがキャンセルされます。"
+              ) : (
+                <>
+                  選択した {selected.size} 件の配信先を削除します。
+                  <br />
+                  サブスクリプションの数量が {selected.size}{" "}
+                  件マイナスされます。
+                </>
+              )}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="mt-2">
@@ -1350,7 +1378,7 @@ function DeleteRecipientsModal({
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" /> 処理中...
                 </>
               ) : (
-                "OK"
+                "削除"
               )}
             </Button>
           </DialogFooter>
@@ -1364,7 +1392,9 @@ function DeleteRecipientsModal({
               削除が完了しました
             </DialogTitle>
             <DialogDescription className="mb-6">
-              選択した配信先の削除とサブスクリプション数量の調整が完了しました。
+              {isCancellingSubscription
+                ? "配信先の削除とサブスクリプションキャンセルが完了しました。"
+                : "選択した配信先の削除とサブスクリプション数量変更が完了しました。"}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -1380,6 +1410,15 @@ function DeleteRecipientsModal({
                 閉じる
               </Button>
             </DialogClose>
+
+            {/* ★ ここを portalUrl のみで表示。フォールバックは使わない */}
+            {portalUrl && (
+              <Button asChild>
+                <a href={portalUrl} target="_blank" rel="noopener noreferrer">
+                  管理画面で確認
+                </a>
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

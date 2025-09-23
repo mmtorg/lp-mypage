@@ -22,6 +22,96 @@ export async function POST(req: NextRequest) {
 
   try {
     switch (event.type) {
+      case "customer.updated": {
+        const customer = event.data.object as any;
+        const previousEmail = (
+          event.data.previous_attributes?.email as string
+        )?.trim();
+        const newEmail = (customer.email as string)?.trim();
+        const customerId = customer.id;
+
+        console.log("[webhook] customer.updated received", {
+          customerId,
+          newEmail,
+          previousEmail,
+        });
+
+        if (!previousEmail || !newEmail || !customerId || previousEmail === newEmail) {
+          console.log(
+            "[webhook] customer.updated skipped (no change or missing data)"
+          );
+          break;
+        }
+
+        try {
+          // 1. Update user_stripe table
+          const { error: userStripeError, count: userStripeCount } = await supabaseAdmin
+            .from("user_stripe")
+            .update({ email: newEmail, updated_at: new Date().toISOString() })
+            .eq("stripe_customer_id", customerId)
+            .select();
+
+          console.log(
+            "[webhook] customer.updated: user_stripe update attempted",
+            { customerId, count: userStripeCount }
+          );
+          if (userStripeError) {
+            throw new Error(
+              `user_stripe update failed: ${userStripeError.message}`
+            );
+          }
+
+          // 2. Update recipient_emails table for the owner
+          const { data: userStripeRecords, error: findError } = await supabaseAdmin
+            .from("user_stripe")
+            .select("id")
+            .eq("stripe_customer_id", customerId);
+
+          if (findError) {
+            throw new Error(
+              `Failed to find user_stripe records: ${findError.message}`
+            );
+          }
+
+          if (userStripeRecords && userStripeRecords.length > 0) {
+            const userStripeIds = userStripeRecords.map((r) => r.id);
+            console.log("[webhook] customer.updated: found user_stripe IDs", {
+              userStripeIds,
+            });
+
+            const { error: recipientEmailError, count: recipientEmailCount } =
+              await supabaseAdmin
+                .from("recipient_emails")
+                .update({ email: newEmail })
+                .in("user_stripe_id", userStripeIds)
+                .eq("email", previousEmail) // Use previousEmail to find the record
+                .select();
+
+            console.log(
+              "[webhook] customer.updated: recipient_emails update attempted",
+              { count: recipientEmailCount }
+            );
+            if (recipientEmailError) {
+              throw new Error(
+                `recipient_emails update failed: ${recipientEmailError.message}`
+              );
+            }
+          } else {
+            console.warn(
+              "[webhook] customer.updated: no user_stripe records found for customerId when updating recipients",
+              customerId
+            );
+          }
+
+          console.log("[webhook] customer.updated successful sync", {
+            customerId,
+          });
+        } catch (e) {
+          console.error("[webhook] customer.updated sync failed", e);
+        }
+        break;
+      }
+
       case "checkout.session.completed": {
         const session = event.data.object as any;
         const customerId: string | null = session.customer ?? null;

@@ -522,20 +522,12 @@ async function adjustStripeForDeletion(
 
   const ADDON_PRICE_IDS = new Set(
     [
-      process.env.STRIPE_ADDON_PRICE_ID_LITE,
-      process.env.STRIPE_ADDON_PRICE_ID_BUSINESS,
+      process.env.STRIPE_ADDON_PRICE_ID_LITE_MONTHLY,
+      process.env.STRIPE_ADDON_PRICE_ID_LITE_YEARLY,
+      process.env.STRIPE_ADDON_PRICE_ID_BUSINESS_MONTHLY,
+      process.env.STRIPE_ADDON_PRICE_ID_BUSINESS_YEARLY,
     ].filter((v): v is string => typeof v === "string" && !!v)
   );
-  const ADDON_PRODUCT_IDS = new Set([
-    ...(process.env.STRIPE_ADDON_PRODUCT_IDS_LITE || "")
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean),
-    ...(process.env.STRIPE_ADDON_PRODUCT_IDS_BUSINESS || "")
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean),
-  ]);
 
   let failed = false;
   for (const [subId, removeCount] of removeBySub.entries()) {
@@ -543,46 +535,15 @@ async function adjustStripeForDeletion(
     const nextQty = Math.max(0, current - removeCount);
 
     try {
-      const sub: any = await stripe.subscriptions.retrieve(subId);
+      const sub: any = await stripe.subscriptions.retrieve(subId, {
+        expand: ["items.data.price.product"],
+      });
       const items: any[] = Array.isArray(sub?.items?.data)
         ? sub.items.data
         : [];
       let addonItem: any | undefined = items.find((it: any) =>
         ADDON_PRICE_IDS.has(it?.price?.id)
       );
-
-      // Priority 2: Product ID match via env
-      if (!addonItem && ADDON_PRODUCT_IDS.size > 0) {
-        for (const it of items) {
-          try {
-            const p = it?.price?.product as any;
-            const productId: string | undefined =
-              typeof p === "string" ? p : p?.id;
-            if (productId && ADDON_PRODUCT_IDS.has(productId)) {
-              addonItem = it;
-              break;
-            }
-          } catch {}
-        }
-      }
-
-      // Fallback: try to detect by product metadata.type === 'add'
-      if (!addonItem) {
-        for (const it of items) {
-          try {
-            const p = it?.price?.product as any;
-            const productId: string | undefined =
-              typeof p === "string" ? p : p?.id;
-            if (!productId) continue;
-            const product = await stripe.products.retrieve(productId);
-            const t = (product as any)?.metadata?.type;
-            if (t && String(t).toLowerCase() === "add") {
-              addonItem = it;
-              break;
-            }
-          } catch {}
-        }
-      }
 
       if (!addonItem) {
         console.warn(
@@ -601,20 +562,12 @@ async function adjustStripeForDeletion(
           nextQty,
         });
       } else {
-        // If subscription has only the addon item, cancel entire subscription; otherwise remove the item only
-        const hasOtherItems = items.some((it) => it.id !== addonItem.id);
-        if (hasOtherItems) {
-          await stripe.subscriptionItems.del(addonItem.id);
-          console.log(
-            "[recipients:DELETE] removed addon item from subscription",
-            { subId }
-          );
-        } else {
-          await stripe.subscriptions.cancel(subId);
-          console.log("[recipients:DELETE] canceled addon-only subscription", {
-            subId,
-          });
-        }
+        // Always just delete the addon item, never cancel the whole subscription from here.
+        await stripe.subscriptionItems.del(addonItem.id);
+        console.log(
+          "[recipients:DELETE] removed addon item from subscription as quantity is zero",
+          { subId }
+        );
       }
     } catch (e) {
       console.warn(

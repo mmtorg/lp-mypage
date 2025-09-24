@@ -43,12 +43,22 @@ NEXT_PUBLIC_PL_NEW_LITE_MONTHLY=https://buy.stripe.com/your_lite_monthly_link
 NEXT_PUBLIC_PL_NEW_LITE_YEARLY=https://buy.stripe.com/your_lite_yearly_link
 NEXT_PUBLIC_PL_NEW_BUS_MONTHLY=https://buy.stripe.com/your_business_monthly_link
 NEXT_PUBLIC_PL_NEW_BUS_YEARLY=https://buy.stripe.com/your_business_yearly_link
-NEXT_PUBLIC_PL_ADDON_LITE_SEAT=https://buy.stripe.com/your_lite_addon_link
-NEXT_PUBLIC_PL_ADDON_BUS_SEAT=https://buy.stripe.com/your_business_addon_link
+NEXT_PUBLIC_PL_ADDON_LITE_SEAT_MONTHLY=https://buy.stripe.com/your_lite_addon_monthly_link
+NEXT_PUBLIC_PL_ADDON_LITE_SEAT_YEARLY=https://buy.stripe.com/your_lite_addon_yearly_link
+NEXT_PUBLIC_PL_ADDON_BUS_SEAT_MONTHLY=https://buy.stripe.com/your_bus_addon_monthly_link
+NEXT_PUBLIC_PL_ADDON_BUS_SEAT_YEARLY=https://buy.stripe.com/your_bus_addon_yearly_link
 
 # 必須: Stripe設定
 STRIPE_SECRET_KEY=sk_live_or_test_your_stripe_secret_key
 STRIPE_WEBHOOK_SECRET=whsec_your_webhook_secret
+
+# 必須: Stripe価格ID
+STRIPE_PRICE_IDS_LITE=price_xxx,price_yyy
+STRIPE_PRICE_IDS_BUSINESS=price_aaa,price_bbb
+STRIPE_ADDON_PRICE_ID_LITE_MONTHLY=price_lite_addon_monthly
+STRIPE_ADDON_PRICE_ID_LITE_YEARLY=price_lite_addon_yearly
+STRIPE_ADDON_PRICE_ID_BUSINESS_MONTHLY=price_biz_addon_monthly
+STRIPE_ADDON_PRICE_ID_BUSINESS_YEARLY=price_biz_addon_yearly
 
 # 必須: Supabase設定
 # クライアント(ブラウザ)で使う公開鍵

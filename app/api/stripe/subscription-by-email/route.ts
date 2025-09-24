@@ -27,12 +27,15 @@ function inferItemType(product: any): "base" | "addon" {
   return "base";
 }
 
-async function collectSubscriptionItems(sub: any): Promise<{ items: PurchasedItem[]; primaryName?: string }> {
+async function collectSubscriptionItems(
+  sub: any
+): Promise<{ items: PurchasedItem[]; primaryName?: string; primaryPrice?: { unit_amount?: number; currency?: string } }> {
   const rawItems: any[] = Array.isArray(sub?.items?.data) ? sub.items.data : [];
   if (!rawItems.length) return { items: [], primaryName: undefined };
 
   const productCache = new Map<string, any>();
   const items: PurchasedItem[] = [];
+  let primaryPrice: { unit_amount?: number; currency?: string } | undefined = undefined;
 
   for (const item of rawItems) {
     const price: any = item?.price ?? {};
@@ -55,23 +58,44 @@ async function collectSubscriptionItems(sub: any): Promise<{ items: PurchasedIte
       product = prodAny;
     }
 
-    const quantity = typeof item?.quantity === "number" && !Number.isNaN(item.quantity) ? item.quantity : 1;
-    const name =
-      (product as any)?.name ??
-      price?.nickname ??
-      (typeof price?.product === "string" ? price.product : price?.id ?? "不明な商品");
-
-    items.push({
-      name,
-      quantity,
-      type: inferItemType(product),
-      price_id: price?.id,
-      product_id: productId,
-    });
-  }
+            const quantity = typeof item?.quantity === "number" && !Number.isNaN(item.quantity) ? item.quantity : 1;
+            let formattedName =
+              (product as any)?.name ??
+              price?.nickname ??
+              (typeof price?.product === "string" ? price.product : price?.id ?? "不明な商品");
+    
+            if (price.unit_amount && price.currency) {
+              let displayAmount = price.unit_amount;
+              // JPYの場合は100で割る必要がない
+              if (price.currency.toLowerCase() !== 'jpy') {
+                displayAmount = price.unit_amount / 100;
+              }
+    
+              const formatter = new Intl.NumberFormat('ja-JP', {
+                style: 'currency',
+                currency: price.currency.toUpperCase(),
+                minimumFractionDigits: 0, // JPYの場合は小数点以下を表示しない
+                maximumFractionDigits: price.currency.toLowerCase() === 'jpy' ? 0 : 2, // JPY以外は2桁
+              });
+              const formattedUnitAmount = formatter.format(displayAmount);
+              formattedName = `${formattedName} ${formattedUnitAmount}`;
+            }
+    
+            const itemType = inferItemType(product);
+            if (itemType === "base" && !primaryPrice && price.unit_amount) {
+              primaryPrice = { unit_amount: price.unit_amount, currency: price.currency };
+            }
+    
+            items.push({
+              name: formattedName,
+              quantity,
+              type: itemType,
+              price_id: price?.id,
+              product_id: productId,
+            });  }
 
   const primaryName = items.find((item) => item.type === "base")?.name ?? items[0]?.name;
-  return { items, primaryName };
+  return { items, primaryName, primaryPrice };
 }
 
 function envList(name: string): string[] {
@@ -83,9 +107,9 @@ function envList(name: string): string[] {
     .filter(Boolean);
 }
 
-// Product ID mapping for plan detection
-const LITE_PRODUCT_IDS = envList("STRIPE_PRODUCT_IDS_LITE");
-const BUSINESS_PRODUCT_IDS = envList("STRIPE_PRODUCT_IDS_BUSINESS");
+// Price ID mapping for plan detection
+const LITE_PRICE_IDS = envList("STRIPE_PRICE_IDS_LITE");
+const BUSINESS_PRICE_IDS = envList("STRIPE_PRICE_IDS_BUSINESS");
 const VALID_STATUSES = new Set(
   envList("SUBSCRIPTION_VALID_STATUSES").map((s) => s.toLowerCase())
 );
@@ -97,12 +121,13 @@ if (VALID_STATUSES.size === 0) {
 async function inferPlanFromSubscription(sub: any): Promise<Plan> {
   try {
     const item = sub?.items?.data?.[0];
+    const priceId: string | undefined = item?.price?.id;
+    if (priceId) {
+      if (LITE_PRICE_IDS.includes(priceId)) return "lite";
+      if (BUSINESS_PRICE_IDS.includes(priceId)) return "business";
+    }
     const p = item?.price?.product as any;
     const productId: string | undefined = typeof p === "string" ? p : p?.id;
-    if (productId) {
-      if (LITE_PRODUCT_IDS.includes(productId)) return "lite";
-      if (BUSINESS_PRODUCT_IDS.includes(productId)) return "business";
-    }
     if (productId) {
       const product = await stripe.products.retrieve(productId);
       const name = ((product as any)?.name || "").toLowerCase();
@@ -111,6 +136,23 @@ async function inferPlanFromSubscription(sub: any): Promise<Plan> {
     }
   } catch {}
   return null;
+}
+
+function getAddonPriceId(plan: string | null, interval: string | null | undefined): string | undefined {
+  if (!plan || !interval) return undefined;
+
+  const planName = String(plan).toLowerCase();
+  const intervalName = String(interval).toLowerCase();
+
+  if (planName === "lite") {
+    if (intervalName === "month") return process.env.STRIPE_ADDON_PRICE_ID_LITE_MONTHLY;
+    if (intervalName === "year") return process.env.STRIPE_ADDON_PRICE_ID_LITE_YEARLY;
+  }
+  if (planName === "business") {
+    if (intervalName === "month") return process.env.STRIPE_ADDON_PRICE_ID_BUSINESS_MONTHLY;
+    if (intervalName === "year") return process.env.STRIPE_ADDON_PRICE_ID_BUSINESS_YEARLY;
+  }
+  return undefined;
 }
 
 export async function GET(req: NextRequest) {
@@ -126,14 +168,14 @@ export async function GET(req: NextRequest) {
     const debug: any = debugMode ? { step: "start", email, ttlSec } : undefined;
     if (debugMode) {
       console.log("[sub-by-email] start", { email, ttlSec, force });
-      console.log("[sub-by-email] mappings", { LITE_PRODUCT_IDS, BUSINESS_PRODUCT_IDS });
+      console.log("[sub-by-email] mappings", { LITE_PRICE_IDS, BUSINESS_PRICE_IDS });
     }
 
     // Cache lookup in user_stripe
     try {
       const { data: cached } = await supabaseAdmin
         .from("user_stripe")
-        .select("current_plan, email, updated_at, stripe_customer_id")
+        .select("current_plan, email, updated_at, stripe_customer_id, is_trialing")
         .eq("email", email)
         .maybeSingle();
       if (debugMode) debug.cached = cached ?? null;
@@ -141,10 +183,11 @@ export async function GET(req: NextRequest) {
       if (!force && cached?.current_plan) {
         if (debugMode) console.log("[sub-by-email] hit cache(non-null)", { cached });
         let productName: string | undefined;
-        let addon_unit_amount: number | undefined;
-        let addon_currency: string | undefined;
+        let unit_amount: number | undefined;
+        let currency: string | undefined;
         let recipients: RecipientInfo[] = [];
-    let purchasedItems: PurchasedItem[] = [];
+        let purchasedItems: PurchasedItem[] = [];
+        let primaryInterval: string | undefined;
         try {
           if (cached.stripe_customer_id) {
             const all = await safeStripeCall(
@@ -154,24 +197,18 @@ export async function GET(req: NextRequest) {
             const valids = all.data.filter((s) => VALID_STATUSES.has(String(s.status).toLowerCase()));
             let primaryCaptured = false;
             for (const sub of valids) {
-              const { items, primaryName } = await collectSubscriptionItems(sub);
+              const { items, primaryName, primaryPrice } = await collectSubscriptionItems(sub);
               purchasedItems.push(...items);
               if (!primaryCaptured && primaryName) {
                 productName = primaryName;
                 primaryCaptured = true;
+                primaryInterval = sub.items?.data?.[0]?.price?.recurring?.interval;
+                if (primaryPrice) {
+                  unit_amount = primaryPrice.unit_amount;
+                  currency = primaryPrice.currency;
+                }
               }
             }
-          }
-        } catch {}
-        try {
-          const addonPriceId =
-            (cached.current_plan === "lite" && process.env.STRIPE_ADDON_PRICE_ID_LITE) ||
-            (cached.current_plan === "business" && process.env.STRIPE_ADDON_PRICE_ID_BUSINESS) ||
-            undefined;
-          if (addonPriceId) {
-            const pr = await safeStripeCall(() => stripe.prices.retrieve(addonPriceId), "prices.retrieve");
-            addon_unit_amount = (pr as any)?.unit_amount ?? undefined;
-            addon_currency = (pr as any)?.currency ?? undefined;
           }
         } catch {}
         try {
@@ -183,10 +220,11 @@ export async function GET(req: NextRequest) {
           current_plan: cached.current_plan,
           email,
           product_name: productName,
-          addon_unit_amount,
-          addon_currency,
+          unit_amount,
+          currency,
           recipients,
           purchased_items: purchasedItems,
+          is_trialing: cached.is_trialing,
         });
       }
 
@@ -195,10 +233,11 @@ export async function GET(req: NextRequest) {
         if (ageMs <= ttlSec * 1000 && cached.current_plan) {
           if (debugMode) console.log("[sub-by-email] hit cache(non-null)", { ageMs, cached });
           let productName: string | undefined;
-          let addon_unit_amount: number | undefined;
-          let addon_currency: string | undefined;
+          let unit_amount: number | undefined;
+          let currency: string | undefined;
           let recipients: RecipientInfo[] = [];
-        let purchasedItems: PurchasedItem[] = [];
+          let purchasedItems: PurchasedItem[] = [];
+          let primaryInterval: string | undefined;
           try {
             if (cached.stripe_customer_id) {
               const all = await safeStripeCall(
@@ -208,24 +247,18 @@ export async function GET(req: NextRequest) {
               const valids = all.data.filter((s) => VALID_STATUSES.has(String(s.status).toLowerCase()));
               let primaryCaptured = false;
               for (const sub of valids) {
-                const { items, primaryName } = await collectSubscriptionItems(sub);
+                const { items, primaryName, primaryPrice } = await collectSubscriptionItems(sub);
                 purchasedItems.push(...items);
                 if (!primaryCaptured && primaryName) {
                   productName = primaryName;
                   primaryCaptured = true;
+                  primaryInterval = sub.items?.data?.[0]?.price?.recurring?.interval;
+                  if (primaryPrice) {
+                    unit_amount = primaryPrice.unit_amount;
+                    currency = primaryPrice.currency;
+                  }
                 }
               }
-            }
-          } catch {}
-          try {
-            const addonPriceId =
-              (cached.current_plan === "lite" && process.env.STRIPE_ADDON_PRICE_ID_LITE) ||
-              (cached.current_plan === "business" && process.env.STRIPE_ADDON_PRICE_ID_BUSINESS) ||
-              undefined;
-            if (addonPriceId) {
-              const pr = await safeStripeCall(() => stripe.prices.retrieve(addonPriceId), "prices.retrieve");
-              addon_unit_amount = (pr as any)?.unit_amount ?? undefined;
-              addon_currency = (pr as any)?.currency ?? undefined;
             }
           } catch {}
           try {
@@ -237,10 +270,11 @@ export async function GET(req: NextRequest) {
             current_plan: cached.current_plan,
             email,
             product_name: productName,
-            addon_unit_amount,
-            addon_currency,
+            unit_amount,
+            currency,
             recipients,
             purchased_items: purchasedItems,
+            is_trialing: cached.is_trialing,
           });
         } else if (debugMode) {
           console.log("[sub-by-email] bypass cache (stale or null)", { ageMs, cachedPlan: cached.current_plan });
@@ -279,6 +313,9 @@ export async function GET(req: NextRequest) {
     let primaryCaptured = false;
     let hasBusiness = false;
     let hasLite = false;
+    let is_trialing = false;
+    let primaryInterval: string | undefined;
+    let primaryPriceInfo: { unit_amount?: number; currency?: string } | undefined;
     for (const c of customers.data) {
       const all = await safeStripeCall(
         () => stripe.subscriptions.list({ customer: c.id, status: "all", limit: 10 }),
@@ -292,6 +329,7 @@ export async function GET(req: NextRequest) {
       }
       const valids = all.data.filter((s) => VALID_STATUSES.has(String(s.status).toLowerCase()));
       for (const sub of valids) {
+        if (sub.status === "trialing") is_trialing = true;
         try {
           const inferred = await inferPlanFromSubscription(sub);
           if (inferred === "business") hasBusiness = true;
@@ -301,6 +339,10 @@ export async function GET(req: NextRequest) {
           if (!primaryCaptured && described.primaryName) {
             productName = described.primaryName;
             primaryCaptured = true;
+            primaryInterval = sub.items?.data?.[0]?.price?.recurring?.interval;
+            if (described.primaryPrice) {
+              primaryPriceInfo = described.primaryPrice;
+            }
           }
           if (!stripeCustomerIdForLink) {
             const custAny = (sub as any).customer;
@@ -318,6 +360,7 @@ export async function GET(req: NextRequest) {
       const upsertPayload: Record<string, any> = {
         email,
         updated_at: new Date().toISOString(),
+        is_trialing,
       };
       if (stripeCustomerIdForLink) upsertPayload.stripe_customer_id = stripeCustomerIdForLink;
       if (currentPlan) upsertPayload.current_plan = currentPlan;
@@ -372,21 +415,10 @@ export async function GET(req: NextRequest) {
     }
 
     // Add-on price lookup for UI (optional)
-    let addon_unit_amount: number | undefined;
-    let addon_currency: string | undefined;
-    try {
-      const addonPriceId =
-        (currentPlan === "lite" && process.env.STRIPE_ADDON_PRICE_ID_LITE) ||
-        (currentPlan === "business" && process.env.STRIPE_ADDON_PRICE_ID_BUSINESS) ||
-        undefined;
-      if (addonPriceId) {
-        const pr = await safeStripeCall(() => stripe.prices.retrieve(addonPriceId), "prices.retrieve");
-        addon_unit_amount = (pr as any)?.unit_amount ?? undefined;
-        addon_currency = (pr as any)?.currency ?? undefined;
-      }
-    } catch {}
+    let unit_amount: number | undefined = primaryPriceInfo?.unit_amount;
+    let currency: string | undefined = primaryPriceInfo?.currency;
 
-    if (debugMode) console.log("[sub-by-email] done", { email, currentPlan, productName, addon_unit_amount, addon_currency, purchasedCount: purchasedItems.length });
+    if (debugMode) console.log("[sub-by-email] done", { email, currentPlan, productName, unit_amount, currency, purchasedCount: purchasedItems.length });
     if (debugMode && debug) {
       debug.valid_statuses = Array.from(VALID_STATUSES.values());
       debug.purchased_items = purchasedItems;
@@ -397,20 +429,22 @@ export async function GET(req: NextRequest) {
             current_plan: currentPlan,
             email,
             product_name: productName,
-            addon_unit_amount,
-            addon_currency,
+            unit_amount,
+            currency,
             recipients,
             purchased_items: purchasedItems,
+            is_trialing,
             debug,
           }
         : {
             current_plan: currentPlan,
             email,
             product_name: productName,
-            addon_unit_amount,
-            addon_currency,
+            unit_amount,
+            currency,
             recipients,
             purchased_items: purchasedItems,
+            is_trialing,
           }
     );
   } catch (e) {

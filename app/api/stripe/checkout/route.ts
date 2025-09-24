@@ -8,11 +8,15 @@ export const runtime = "nodejs";
 
 type Plan = "lite" | "business";
 
-const PRICE_ADDON_LITE = process.env.STRIPE_ADDON_PRICE_ID_LITE!;
-const PRICE_ADDON_BUSINESS = process.env.STRIPE_ADDON_PRICE_ID_BUSINESS!;
+const PRICE_ADDON_LITE_MONTHLY = process.env.STRIPE_ADDON_PRICE_ID_LITE_MONTHLY!;
+const PRICE_ADDON_LITE_YEARLY = process.env.STRIPE_ADDON_PRICE_ID_LITE_YEARLY!;
+const PRICE_ADDON_BUSINESS_MONTHLY = process.env.STRIPE_ADDON_PRICE_ID_BUSINESS_MONTHLY!;
+const PRICE_ADDON_BUSINESS_YEARLY = process.env.STRIPE_ADDON_PRICE_ID_BUSINESS_YEARLY!;
 
-const PL_LITE = process.env.NEXT_PUBLIC_PL_ADDON_LITE_SEAT || "";
-const PL_BUSINESS = process.env.NEXT_PUBLIC_PL_ADDON_BUS_SEAT || "";
+const PL_LITE_MONTHLY = process.env.NEXT_PUBLIC_PL_ADDON_LITE_SEAT_MONTHLY || "";
+const PL_LITE_YEARLY = process.env.NEXT_PUBLIC_PL_ADDON_LITE_SEAT_YEARLY || "";
+const PL_BUSINESS_MONTHLY = process.env.NEXT_PUBLIC_PL_ADDON_BUS_SEAT_MONTHLY || "";
+const PL_BUSINESS_YEARLY = process.env.NEXT_PUBLIC_PL_ADDON_BUS_SEAT_YEARLY || "";
 
 const ACTIVE_STATUSES: Stripe.Subscription.Status[] = [
   "trialing",
@@ -21,17 +25,19 @@ const ACTIVE_STATUSES: Stripe.Subscription.Status[] = [
   "unpaid",
 ];
 
-function pickPriceAndPL(plan: Plan) {
+function pickPriceAndPL(plan: Plan, interval?: string | null) {
+  const isYearly = interval === "year";
+
   if (plan === "business") {
     return {
-      priceId: PRICE_ADDON_BUSINESS,
-      paymentLink: PL_BUSINESS || undefined,
+      priceId: isYearly ? PRICE_ADDON_BUSINESS_YEARLY : PRICE_ADDON_BUSINESS_MONTHLY,
+      paymentLink: isYearly ? PL_BUSINESS_YEARLY : PL_BUSINESS_MONTHLY,
       productLabel: "Business : 配信先追加",
     } as const;
   }
   return {
-    priceId: PRICE_ADDON_LITE,
-    paymentLink: PL_LITE || undefined,
+    priceId: isYearly ? PRICE_ADDON_LITE_YEARLY : PRICE_ADDON_LITE_MONTHLY,
+    paymentLink: isYearly ? PL_LITE_YEARLY : PL_LITE_MONTHLY,
     productLabel: "Lite : 配信先追加",
   } as const;
 }
@@ -153,6 +159,19 @@ export async function POST(req: NextRequest) {
       ? body.additionalEmails
       : [];
 
+    // Find interval from active subscription
+    let interval: string | null = null;
+    let stripeCustomerId = await getStripeCustomerIdFromDB(ownerEmail);
+    if (stripeCustomerId) {
+      const sub = await findAnyActiveSubscription(stripeCustomerId);
+      if (sub) {
+        interval = sub.items?.data?.[0]?.price?.recurring?.interval ?? null;
+      }
+    } else {
+      // 顧客IDが見つからない場合、デフォルトで月次を選択
+      interval = "month";
+    }
+
     // 追加メールの有効件数をサーバーで再計算（UIと厳密一致）
     const validAdditionalEmails = additionalEmailsRaw
       .filter((e) => typeof e === "string" && /.+@.+\..+/.test(e.trim()))
@@ -161,7 +180,7 @@ export async function POST(req: NextRequest) {
     const requestedQty = validAdditionalEmails.length > 0 ? validAdditionalEmails.length : quantity;
     const qty = Math.min(10, Math.max(1, Math.floor(Number(requestedQty))));
 
-    const { priceId, paymentLink, productLabel } = pickPriceAndPL(plan);
+    const { priceId, paymentLink, productLabel } = pickPriceAndPL(plan, interval);
 
     // 価格タイプで Checkout mode を決める（通常は subscription）
     const price = await stripe.prices.retrieve(priceId);
@@ -174,9 +193,6 @@ export async function POST(req: NextRequest) {
     const success_url = `${baseUrl}/mypage?success=1`;
     const cancel_url = `${baseUrl}/mypage?canceled=1`;
 
-    // 顧客IDの解決（DB）
-    let stripeCustomerId = await getStripeCustomerIdFromDB(ownerEmail);
-
     // メタデータ
     const metadata: Record<string, string> = { plan };
     if (ownerEmail) metadata.owner_email = ownerEmail;
@@ -186,13 +202,10 @@ export async function POST(req: NextRequest) {
 
     // PRECHECK: 副作用ゼロで判定だけ返す
     if (body?.precheck) {
-      const hasAddons =
-        ownerEmail && (await hasExistingAddonRecipients(ownerEmail));
-
       if (stripeCustomerId) {
         const pmSaved = await hasSavedPaymentMethod(stripeCustomerId);
 
-        if (pmSaved && hasAddons) {
+        if (pmSaved) {
           const sub = await findAnyActiveSubscription(stripeCustomerId);
           const priceMatches = findAddonItemsByPrice(sub, priceId);
           const currentQty =
@@ -274,11 +287,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ url: (cs as any)?.url, isPaymentLink: false, openInSameTab: true });
     }
 
-    const hasAddons =
-      ownerEmail && (await hasExistingAddonRecipients(ownerEmail));
     const pmSaved = await hasSavedPaymentMethod(stripeCustomerId);
     const sub = await findAnyActiveSubscription(stripeCustomerId);
-    if (!pmSaved || !sub || !hasAddons) {
+    if (!pmSaved || !sub) {
       if (paymentLink) {
         return NextResponse.json({ url: paymentLink, isPaymentLink: true, openInSameTab: true });
       }

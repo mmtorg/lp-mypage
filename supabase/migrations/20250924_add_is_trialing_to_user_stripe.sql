@@ -1,0 +1,2 @@
+ALTER TABLE public.user_stripe
+ADD COLUMN is_trialing BOOLEAN NOT NULL DEFAULT FALSE;

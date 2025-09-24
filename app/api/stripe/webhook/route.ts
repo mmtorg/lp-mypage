@@ -127,6 +127,7 @@ export async function POST(req: NextRequest) {
           customerEmail,
         });
 
+        let is_trialing = false;
         // If metadata.plan is missing (e.g., Payment Link), infer plan from Product ID mapping
         // and only persist when the created subscription is in a valid status.
         if (!normalizedPlan) {
@@ -136,26 +137,27 @@ export async function POST(req: NextRequest) {
               .map((s) => s.trim().toLowerCase())
               .filter(Boolean)
           );
-          const LITE_PRODUCT_IDS = (process.env.STRIPE_PRODUCT_IDS_LITE || "")
+          const LITE_PRICE_IDS = (process.env.STRIPE_PRICE_IDS_LITE || "")
             .split(",")
             .map((s) => s.trim())
             .filter(Boolean);
-          const BUSINESS_PRODUCT_IDS = (
-            process.env.STRIPE_PRODUCT_IDS_BUSINESS || ""
+          const BUSINESS_PRICE_IDS = (
+            process.env.STRIPE_PRICE_IDS_BUSINESS || ""
           )
             .split(",")
             .map((s) => s.trim())
             .filter(Boolean);
 
-          const inferPlanFromProductId = async (
-            productId?: string | null
+          const inferPlanFromPriceId = async (
+            priceId?: string | null
           ): Promise<"lite" | "business" | null> => {
-            if (!productId) return null;
-            if (LITE_PRODUCT_IDS.includes(productId)) return "lite";
-            if (BUSINESS_PRODUCT_IDS.includes(productId)) return "business";
+            if (!priceId) return null;
+            if (LITE_PRICE_IDS.includes(priceId)) return "lite";
+            if (BUSINESS_PRICE_IDS.includes(priceId)) return "business";
             try {
-              const product = await stripe.products.retrieve(productId);
-              const name = (product as any)?.name?.toLowerCase?.() || "";
+              const price = await stripe.prices.retrieve(priceId, { expand: ["product"] });
+              const product = price.product as any;
+              const name = product?.name?.toLowerCase?.() || "";
               if (name.includes("lite")) return "lite";
               if (name.includes("business")) return "business";
             } catch {}
@@ -168,17 +170,16 @@ export async function POST(req: NextRequest) {
             if (subId) {
               const sub = await stripe.subscriptions.retrieve(subId);
               const status = String((sub as any)?.status || "").toLowerCase();
+              is_trialing = status === "trialing";
               const item = (sub as any)?.items?.data?.[0];
-              const prodAny = item?.price?.product as any;
-              const productId: string | undefined =
-                typeof prodAny === "string" ? prodAny : prodAny?.id;
-              const inferred = await inferPlanFromProductId(productId);
+              const priceId: string | undefined = item?.price?.id;
+              const inferred = await inferPlanFromPriceId(priceId);
               if (inferred && VALID_STATUSES.has(status)) {
                 normalizedPlan = inferred;
                 console.log("[webhook] inferred plan from subscription", {
                   subId,
                   status,
-                  productId,
+                  priceId,
                   normalizedPlan,
                 });
               } else {
@@ -196,13 +197,11 @@ export async function POST(req: NextRequest) {
                   { limit: 1 }
                 );
                 const li = items?.data?.[0];
-                const prodAny = (li as any)?.price?.product as any;
-                const productId: string | undefined =
-                  typeof prodAny === "string" ? prodAny : prodAny?.id;
-                const inferred = await inferPlanFromProductId(productId);
+                const priceId: string | undefined = (li as any)?.price?.id;
+                const inferred = await inferPlanFromPriceId(priceId);
                 console.log(
                   "[webhook] inferred plan from line items (no persist without status)",
-                  { productId, inferred }
+                  { priceId, inferred }
                 );
               } catch {}
             }
@@ -270,6 +269,7 @@ export async function POST(req: NextRequest) {
             const baseUpdate: Record<string, any> = {
               email: customerEmail,
               updated_at: nowIso,
+              is_trialing,
             };
             if (normalizedPlan) baseUpdate.current_plan = normalizedPlan;
 
@@ -405,49 +405,43 @@ export async function POST(req: NextRequest) {
             return null;
           };
           try {
+            let price: any;
             if (session?.subscription) {
               const sub = await stripe.subscriptions.retrieve(
-                session.subscription
+                session.subscription,
+                { expand: ["items.data.price"] }
               );
-              const item = (sub as any)?.items?.data?.[0];
-              const prodAny = item?.price?.product as any;
-              const productId: string | undefined =
-                typeof prodAny === "string" ? prodAny : prodAny?.id;
-              if (productId) {
-                try {
-                  const product = await stripe.products.retrieve(productId);
-                  createdVia =
-                    mapTypeToVia((product as any)?.metadata?.type) ?? undefined;
-                } catch {}
-              }
+              price = (sub as any)?.items?.data?.[0]?.price;
             } else if (session?.id) {
               const items = await stripe.checkout.sessions.listLineItems(
                 session.id,
-                { limit: 1 }
+                { limit: 1, expand: ["data.price"] }
               );
-              const li: any = items?.data?.[0];
-              const prodAny = li?.price?.product as any;
-              const productId: string | undefined =
-                typeof prodAny === "string" ? prodAny : prodAny?.id;
-              if (productId) {
-                try {
-                  const product = await stripe.products.retrieve(productId);
-                  createdVia =
-                    mapTypeToVia((product as any)?.metadata?.type) ?? undefined;
-                } catch {}
-              }
+              price = items?.data?.[0]?.price;
             }
-          } catch {}
+            if (price?.metadata?.type) {
+              createdVia = mapTypeToVia(price.metadata.type) ?? undefined;
+            }
+          } catch (e) {
+            console.warn(
+              "[webhook] failed to determine created_via from price metadata",
+              e
+            );
+          }
           if (parent?.id) {
             // 1) 契約者メール（customerEmail）は常に先に upsert する
-            if (customerEmail && createdVia !== "addon") {
+            if (customerEmail) {
               const ownerRow: Record<string, any> = {
                 email: customerEmail,
                 user_stripe_id: parent.id,
               };
               if (normalizedPlan) ownerRow.plan = normalizedPlan;
-              // 契約者は 'initial' として扱う（後続の sub イベントで再調整される場合あり）
-              ownerRow.created_via = "initial";
+              // `createdVia`が`addon`でない場合、または未定義の場合は`initial`として扱う
+              if (createdVia) {
+                ownerRow.created_via = createdVia;
+              } else {
+                ownerRow.created_via = "initial";
+              }
               const { error: ownerErr } = await supabaseAdmin
                 .from("recipient_emails")
                 .upsert([ownerRow], { onConflict: "email", ignoreDuplicates: true });
@@ -464,7 +458,9 @@ export async function POST(req: NextRequest) {
                   user_stripe_id: parent.id,
                 };
                 if (normalizedPlan) row.plan = normalizedPlan;
-                if (createdVia !== undefined) row.created_via = createdVia;
+                if (createdVia) {
+                  row.created_via = createdVia;
+                }
                 return row;
               });
               const { error: recipErr } = await supabaseAdmin
@@ -525,11 +521,11 @@ export async function POST(req: NextRequest) {
       }
 
       case "customer.subscription.created":
-      case "customer.subscription.updated":
-      case "customer.subscription.deleted": {
+      case "customer.subscription.updated": {
         const sub = event.data.object as any;
         const customerId: string = sub.customer;
         const status: string = sub.status; // active / trialing / canceled など
+        const is_trialing = status === "trialing";
         const VALID_STATUSES = new Set(
           (process.env.SUBSCRIPTION_VALID_STATUSES || "active,trialing")
             .split(",")
@@ -537,13 +533,13 @@ export async function POST(req: NextRequest) {
             .filter(Boolean)
         );
 
-        // プラン種別の推定（Product ID のみ）
-        const LITE_PRODUCT_IDS = (process.env.STRIPE_PRODUCT_IDS_LITE || "")
+        // プラン種別の推定（Price ID ベース）
+        const LITE_PRICE_IDS = (process.env.STRIPE_PRICE_IDS_LITE || "")
           .split(",")
           .map((s) => s.trim())
           .filter(Boolean);
-        const BUSINESS_PRODUCT_IDS = (
-          process.env.STRIPE_PRODUCT_IDS_BUSINESS || ""
+        const BUSINESS_PRICE_IDS = (
+          process.env.STRIPE_PRICE_IDS_BUSINESS || ""
         )
           .split(",")
           .map((s) => s.trim())
@@ -552,28 +548,31 @@ export async function POST(req: NextRequest) {
         let planType: "lite" | "business" | null = null;
         try {
           const item = sub.items?.data?.[0];
+          const priceId = item?.price?.id;
           console.log("[webhook] subscription item", {
-            priceId: item?.price?.id,
+            priceId: priceId,
             product:
               typeof item?.price?.product === "string"
                 ? item?.price?.product
                 : item?.price?.product?.id,
             status,
           });
-          // 1) Product ID で判定（優先）
-          const prodAny = item?.price?.product as any;
-          const productId: string | undefined =
-            typeof prodAny === "string" ? prodAny : prodAny?.id;
-          if (productId) {
-            if (LITE_PRODUCT_IDS.includes(productId)) planType = "lite";
-            if (BUSINESS_PRODUCT_IDS.includes(productId)) planType = "business";
+          // 1) Price ID で判定（優先）
+          if (priceId) {
+            if (LITE_PRICE_IDS.includes(priceId)) planType = "lite";
+            if (BUSINESS_PRICE_IDS.includes(priceId)) planType = "business";
           }
           // 2) 最終フォールバック: Product名
-          if (!planType && productId) {
-            const product = await stripe.products.retrieve(productId);
-            const name = (product.name || "").toLowerCase();
-            if (name.includes("lite")) planType = "lite";
-            if (name.includes("business")) planType = "business";
+          if (!planType && item?.price?.product) {
+            const prodAny = item?.price?.product as any;
+            const productId: string | undefined =
+              typeof prodAny === "string" ? prodAny : prodAny?.id;
+            if (productId) {
+              const product = await stripe.products.retrieve(productId);
+              const name = (product.name || "").toLowerCase();
+              if (name.includes("lite")) planType = "lite";
+              if (name.includes("business")) planType = "business";
+            }
           }
         } catch (e) {
           console.warn("Failed to infer plan type", e);
@@ -602,6 +601,7 @@ export async function POST(req: NextRequest) {
                 stripe_customer_id: customerId,
                 current_plan: planType,
                 updated_at: nowIso,
+                is_trialing,
               })
               .eq("id", bySub.data.id)
               .select("id")
@@ -630,6 +630,7 @@ export async function POST(req: NextRequest) {
                   stripe_subscription_id: sub.id,
                   current_plan: planType,
                   updated_at: nowIso,
+                  is_trialing,
                 })
                 .select("id")
                 .maybeSingle();
@@ -647,6 +648,7 @@ export async function POST(req: NextRequest) {
                   email: ownerEmail,
                   current_plan: planType,
                   updated_at: nowIso,
+                  is_trialing,
                 })
                 .eq("id", byCust.data.id)
                 .select("id")
@@ -662,6 +664,7 @@ export async function POST(req: NextRequest) {
                 stripe_subscription_id: sub.id,
                 current_plan: planType,
                 updated_at: nowIso,
+                is_trialing,
               })
               .select("id")
               .maybeSingle();

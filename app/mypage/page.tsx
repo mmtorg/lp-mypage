@@ -619,52 +619,47 @@ function AddRecipientsModal({
     setCheckoutUrl("");
     setAwaitingCheckoutRedirect(false);
 
-    if (isFirstTimeAddonPurchase) {
-      // First time flow (needs redirect)
-      try {
-        setPrechecking(true);
-        const payload = emails.map((v) => v.trim()).filter(Boolean);
-        const res = await fetch("/api/stripe/checkout", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            plan,
-            quantity: count,
-            ownerEmail: email,
-            additionalEmails: payload,
-            precheck: true,
-          }),
-        });
-        const data = await res.json();
+    try {
+      setPrechecking(true);
+      const payload = emails.map((v) => v.trim()).filter(Boolean);
+      const res = await fetch("/api/stripe/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          plan,
+          quantity: count,
+          ownerEmail: email,
+          additionalEmails: payload,
+          precheck: true,
+        }),
+      });
+      const data = await res.json();
 
-        if (data?.url) {
-          setCheckoutUrl(String(data.url));
-        }
-        if (data?.isPaymentLink || data?.openInSameTab) {
-          setAwaitingCheckoutRedirect(true);
-        }
-
-        setSuspendReset(true);
-        setOpen(false);
-        setConfirmOpen(true);
-      } catch (e) {
-        setError("エラーが発生しました");
-      } finally {
-        setPrechecking(false);
+      if (data?.canFinalizeSilently) {
+        // Silent purchase is possible
+        setAwaitingCheckoutRedirect(false);
+      } else if (data?.url) {
+        // Redirect is necessary
+        setCheckoutUrl(String(data.url));
+        setAwaitingCheckoutRedirect(true);
+      } else {
+        // Handle error case
+        throw new Error(data?.error || "確認中にエラーが発生しました。");
       }
-    } else {
-      // Subsequent flow (silent)
-      setAwaitingCheckoutRedirect(false); // Show "OK" button
+
       setSuspendReset(true);
       setOpen(false);
       setConfirmOpen(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "エラーが発生しました");
+    } finally {
+      setPrechecking(false);
     }
   };
 
   const performPurchase = async () => {
     setSaving(true);
     setError(null);
-    let willRedirect = false; // ★finallyで参照するローカルフラグ
     try {
       const payload = emails.map((value) => value.trim()).filter(Boolean);
       const res = await fetch("/api/stripe/checkout", {
@@ -682,12 +677,7 @@ function AddRecipientsModal({
         throw new Error(data?.error || "Checkoutの作成に失敗しました");
       }
       const data = await res.json();
-      if (
-        data &&
-        typeof data === "object" &&
-        "updated" in data &&
-        "portalUrl" in data
-      ) {
+      if (data?.updated && data?.portalUrl) {
         const d = data as Record<string, unknown>;
         setUpdatedProductName(String(d.productName ?? "配信先追加"));
         setUpdatedQuantity(Number(d.newQuantity ?? count));
@@ -695,50 +685,16 @@ function AddRecipientsModal({
         setPostUpdateOpen(true);
         setSuspendReset(false);
         setOpen(false);
-        return;
-      }
-      const url =
-        data &&
-        typeof data === "object" &&
-        "url" in data &&
-        typeof (data as Record<string, unknown>).url === "string"
-          ? String((data as Record<string, unknown>).url)
-          : undefined;
-      const isPaymentLink = Boolean(
-        data &&
-          typeof data === "object" &&
-          "isPaymentLink" in data &&
-          Boolean((data as Record<string, unknown>).isPaymentLink)
-      );
-      const openInSameTab = Boolean(
-        data &&
-          typeof data === "object" &&
-          "openInSameTab" in data &&
-          Boolean((data as Record<string, unknown>).openInSameTab)
-      );
-      if (!url) throw new Error("Checkout URLが取得できませんでした");
-      setCheckoutUrl(url);
-      if (isPaymentLink || openInSameTab) {
-        setAwaitingCheckoutRedirect(true);
-        setSuspendReset(true);
-        willRedirect = true; // ★同タブ遷移へ切り替え
-        return;
       } else {
-        try {
-          window.open(url, "_blank", "noopener,noreferrer");
-        } catch {}
-        setPostCheckoutOpen(true);
-        setSuspendReset(false);
-        setOpen(false);
+        throw new Error(
+          data?.error || "予期せぬエラーが発生しました。再読み込みしてお試しください。"
+        );
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "エラーが発生しました");
     } finally {
       setSaving(false);
-      // ★React の state はすぐ反映されないためローカル変数で判定
-      if (!willRedirect) {
-        setConfirmOpen(false);
-      }
+      setConfirmOpen(false);
     }
   };
 

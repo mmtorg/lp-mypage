@@ -119,15 +119,15 @@ export async function POST(req: NextRequest) {
           session.customer_details?.email ?? session.customer_email ?? null;
         const rawPlan = session.metadata?.plan;
         let normalizedPlan =
-          rawPlan && ["lite", "business"].includes(String(rawPlan))
-            ? (rawPlan as "lite" | "business")
+          rawPlan && ["lite", "business", "trial"].includes(String(rawPlan))
+            ? (rawPlan as "lite" | "business" | "trial")
             : null;
+        let is_trialing = false;
         console.log("[webhook] checkout.session.completed", {
           customerId,
           customerEmail,
         });
 
-        let is_trialing = false;
         // If metadata.plan is missing (e.g., Payment Link), infer plan from Product ID mapping
         // and only persist when the created subscription is in a valid status.
         if (!normalizedPlan) {
@@ -150,13 +150,15 @@ export async function POST(req: NextRequest) {
 
           const inferPlanFromPriceId = async (
             priceId?: string | null
-          ): Promise<"lite" | "business" | null> => {
+          ): Promise<"lite" | "business" | "trial" | null> => {
             if (!priceId) return null;
             if (LITE_PRICE_IDS.includes(priceId)) return "lite";
             if (BUSINESS_PRICE_IDS.includes(priceId)) return "business";
             try {
               const price = await stripe.prices.retrieve(priceId, { expand: ["product"] });
               const product = price.product as any;
+              const metadataType = (product as any)?.metadata?.type;
+              if (metadataType === 'trial') return 'trial';
               const name = product?.name?.toLowerCase?.() || "";
               if (name.includes("lite")) return "lite";
               if (name.includes("business")) return "business";
@@ -269,7 +271,6 @@ export async function POST(req: NextRequest) {
             const baseUpdate: Record<string, any> = {
               email: customerEmail,
               updated_at: nowIso,
-              is_trialing,
             };
             if (normalizedPlan) baseUpdate.current_plan = normalizedPlan;
 
@@ -400,7 +401,7 @@ export async function POST(req: NextRequest) {
           const mapTypeToVia = (t?: any): "initial" | "addon" | null => {
             if (!t) return null;
             const s = String(t).toLowerCase();
-            if (s === "basic") return "initial";
+            if (s === "basic" || s === "trial") return "initial";
             if (s === "add") return "addon";
             return null;
           };
@@ -545,7 +546,7 @@ export async function POST(req: NextRequest) {
           .map((s) => s.trim())
           .filter(Boolean);
 
-        let planType: "lite" | "business" | null = null;
+        let planType: "lite" | "business" | "trial" | null = null;
         try {
           const item = sub.items?.data?.[0];
           const priceId = item?.price?.id;
@@ -569,14 +570,21 @@ export async function POST(req: NextRequest) {
               typeof prodAny === "string" ? prodAny : prodAny?.id;
             if (productId) {
               const product = await stripe.products.retrieve(productId);
-              const name = (product.name || "").toLowerCase();
-              if (name.includes("lite")) planType = "lite";
-              if (name.includes("business")) planType = "business";
+              const metadataType = (product as any)?.metadata?.type;
+              if (metadataType === 'trial') {
+                planType = 'trial';
+              } else {
+                const name = (product.name || "").toLowerCase();
+                if (name.includes("lite")) planType = "lite";
+                if (name.includes("business")) planType = "business";
+              }
             }
           }
         } catch (e) {
           console.warn("Failed to infer plan type", e);
         }
+
+        // Keep planType as product tier; use is_trialing flag for trial state
 
         const isValid = VALID_STATUSES.has(String(status).toLowerCase());
         if (isValid && planType) {
@@ -601,7 +609,6 @@ export async function POST(req: NextRequest) {
                 stripe_customer_id: customerId,
                 current_plan: planType,
                 updated_at: nowIso,
-                is_trialing,
               })
               .eq("id", bySub.data.id)
               .select("id")
@@ -630,7 +637,6 @@ export async function POST(req: NextRequest) {
                   stripe_subscription_id: sub.id,
                   current_plan: planType,
                   updated_at: nowIso,
-                  is_trialing,
                 })
                 .select("id")
                 .maybeSingle();
@@ -648,7 +654,6 @@ export async function POST(req: NextRequest) {
                   email: ownerEmail,
                   current_plan: planType,
                   updated_at: nowIso,
-                  is_trialing,
                 })
                 .eq("id", byCust.data.id)
                 .select("id")
@@ -664,7 +669,6 @@ export async function POST(req: NextRequest) {
                 stripe_subscription_id: sub.id,
                 current_plan: planType,
                 updated_at: nowIso,
-                is_trialing,
               })
               .select("id")
               .maybeSingle();

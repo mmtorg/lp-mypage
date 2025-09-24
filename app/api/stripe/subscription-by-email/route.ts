@@ -224,7 +224,7 @@ export async function GET(req: NextRequest) {
           currency,
           recipients,
           purchased_items: purchasedItems,
-          is_trialing: cached.is_trialing,
+          is_trialing: Boolean((cached as any)?.is_trialing),
         });
       }
 
@@ -274,7 +274,7 @@ export async function GET(req: NextRequest) {
             currency,
             recipients,
             purchased_items: purchasedItems,
-            is_trialing: cached.is_trialing,
+            is_trialing: Boolean((cached as any)?.is_trialing),
           });
         } else if (debugMode) {
           console.log("[sub-by-email] bypass cache (stale or null)", { ageMs, cachedPlan: cached.current_plan });
@@ -360,10 +360,10 @@ export async function GET(req: NextRequest) {
       const upsertPayload: Record<string, any> = {
         email,
         updated_at: new Date().toISOString(),
-        is_trialing,
       };
       if (stripeCustomerIdForLink) upsertPayload.stripe_customer_id = stripeCustomerIdForLink;
       if (currentPlan) upsertPayload.current_plan = currentPlan;
+      upsertPayload.is_trialing = is_trialing;
       // 紐付け対象のサブスクリプションIDがあれば保存
       try {
         const chosenSubId: string | undefined = (customers?.data ?? [])
@@ -433,7 +433,7 @@ export async function GET(req: NextRequest) {
             currency,
             recipients,
             purchased_items: purchasedItems,
-            is_trialing,
+            is_trialing: is_trialing,
             debug,
           }
         : {
@@ -444,7 +444,7 @@ export async function GET(req: NextRequest) {
             currency,
             recipients,
             purchased_items: purchasedItems,
-            is_trialing,
+            is_trialing: is_trialing,
           }
     );
   } catch (e) {

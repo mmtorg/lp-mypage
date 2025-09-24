@@ -1,15 +1,15 @@
 // サブスクリプション関連の型定義
 
 // プランの種類
-export type SubscriptionPlan = "lite" | "business" | null
+export type SubscriptionPlan = "lite" | "business" | "trial" | null
 
 // サブスクリプション情報のレスポンス型
 export interface SubscriptionResponse {
   current_plan: SubscriptionPlan
   customer_id?: string
   subscription_id?: string
-  status?: "active" | "canceled" | "past_due" | "unpaid"
-  current_period_end?: string
+  status?: "active" | "canceled" | "past_due" | "unpaid" | "trialing"
+  current_period_end?: string;
 }
 
 // Stripe Portal APIのレスポンス型

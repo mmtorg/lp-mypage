@@ -1,0 +1,1 @@
+ALTER TABLE public.user_stripe DROP COLUMN is_trialing;

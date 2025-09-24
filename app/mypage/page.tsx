@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Script from "next/script";
 import {
   Card,
   CardContent,
@@ -21,9 +22,9 @@ import {
   DialogHeader,
   DialogTitle,
   DialogDescription,
-  DialogBody,
   DialogFooter,
   DialogClose,
+  DialogBody,
 } from "@/components/ui/dialog";
 
 const MAX_ADDITIONAL_RECIPIENTS = 10;
@@ -54,6 +55,7 @@ interface SubscriptionData {
   addon_currency?: string;
   recipients?: RecipientInfo[];
   purchased_items?: PurchasedItem[];
+  is_trialing?: boolean;
 }
 
 export default function MyPage() {
@@ -136,7 +138,11 @@ export default function MyPage() {
 
   return (
     <div className="min-h-screen bg-gray-50 py-8 px-4">
-      <div className="mx-auto max-w-2xl">
+      <div
+        className={`mx-auto ${
+          sub?.is_trialing ? "max-w-5xl" : "max-w-2xl"
+        } transition-all duration-300`}
+      >
         <div className="mb-8 text-center">
           <h1 className="mb-2 text-3xl font-bold text-gray-900">マイページ</h1>
           <p className="text-gray-600">
@@ -216,6 +222,7 @@ export default function MyPage() {
             addonCurrency={sub.addon_currency}
             recipients={sub.recipients}
             purchasedItems={sub.purchased_items}
+            isTrialing={sub.is_trialing}
             onRefetch={refreshByEmail}
             onReset={() => setSub(null)} // 追加：戻るボタンで sub をクリア
           />
@@ -235,6 +242,7 @@ type ResolvedViewProps = {
   purchasedItems?: PurchasedItem[];
   onReset: () => void;
   onRefetch?: (targetEmail?: string) => void | Promise<void>;
+  isTrialing?: boolean;
 };
 
 function ResolvedView({
@@ -247,6 +255,7 @@ function ResolvedView({
   purchasedItems,
   onReset,
   onRefetch,
+  isTrialing,
 }: ResolvedViewProps) {
   const { toast } = useToast();
   const [recipientList, setRecipientList] = useState<RecipientInfo[]>(
@@ -342,6 +351,72 @@ function ResolvedView({
 
   const manageUrl =
     process.env.NEXT_PUBLIC_STRIPE_SUBSCRIPTION_MANAGE_URL || "";
+
+  if (isTrialing) {
+    return (
+      <Card className="rounded-2xl border-0 shadow-md">
+        <CardHeader className="pb-4">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div className="space-y-3">
+              <h3 className="border-b border-gray-200 pb-2 text-xl font-semibold text-gray-900">
+                現在の契約プラン
+              </h3>
+              <div className="flex items-center justify-between rounded-md bg-gray-50 px-3 py-2 text-sm text-gray-900">
+                <span>
+                  {process.env.NEXT_PUBLIC_TRIAL_PLAN_NAME ||
+                    "無料トライアル (30日)"}
+                </span>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" size="sm" onClick={onReset}>
+                戻る
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-12">
+          <section className="space-y-4">
+            <h3 className="border-b border-gray-200 pb-2 text-xl font-semibold text-gray-900">
+              プランを選択
+            </h3>
+            <div>
+              <Script
+                async
+                src="https://js.stripe.com/v3/pricing-table.js"
+              ></Script>
+              <stripe-pricing-table
+                pricing-table-id="prctbl_1SAk6HF6twdam0Y4fZYQNW30"
+                publishable-key="pk_test_51S5P4VF6twdam0Y43oSJhGvWBKOk2aWe1eWJQ0n3wLGhVuHkkuAMKSZr5jWqY3UXHcKC92rQ91h5O4rTXwF4umdr00tbXvEh7x"
+              ></stripe-pricing-table>
+            </div>
+          </section>
+          <section className="space-y-4">
+            <h3 className="border-b border-gray-200 pb-2 text-xl font-semibold text-gray-900">
+              サブスクリプションの管理
+            </h3>
+            <div className="space-y-2 rounded-md bg-gray-50 p-4 text-sm text-gray-600">
+              <ul className="list-disc pl-5 space-y-1">
+                <li>
+                  サブスクリプションの解約
+                  <ul className="list-none">
+                    <li>
+                      プラン変更をご希望の場合は、一度現在のサブスクリプションを解約し、
+                      新しいプランを購入してください。
+                    </li>
+                  </ul>
+                </li>
+                <li>請求書・領収書ダウンロード</li>
+                <li>請求履歴の確認</li>
+                <li>請求先情報の確認・更新</li>
+              </ul>
+            </div>
+            <PortalButton email={email} />
+          </section>
+        </CardContent>
+      </Card>
+    );
+  }
 
   if (plan === null) {
     return (
@@ -687,7 +762,8 @@ function AddRecipientsModal({
         setOpen(false);
       } else {
         throw new Error(
-          data?.error || "予期せぬエラーが発生しました。再読み込みしてお試しください。"
+          data?.error ||
+            "予期せぬエラーが発生しました。再読み込みしてお試しください。"
         );
       }
     } catch (err) {

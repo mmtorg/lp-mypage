@@ -1,6 +1,7 @@
 // app/api/stripe/checkout/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { stripe } from "@/lib/stripe";
+import { getLitePriceIds, getBusinessPriceIds, getAddonPriceIdForBasePriceId, getAddonPriceIdForPlan } from "@/lib/stripe-price-ids";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import type Stripe from "stripe";
 
@@ -25,21 +26,12 @@ const ACTIVE_STATUSES: Stripe.Subscription.Status[] = [
   "unpaid",
 ];
 
-function pickPriceAndPL(plan: Plan, interval?: string | null) {
+function pickPaymentLink(plan: Plan, interval?: string | null) {
   const isYearly = interval === "year";
-
   if (plan === "business") {
-    return {
-      priceId: isYearly ? PRICE_ADDON_BUSINESS_YEARLY : PRICE_ADDON_BUSINESS_MONTHLY,
-      paymentLink: isYearly ? PL_BUSINESS_YEARLY : PL_BUSINESS_MONTHLY,
-      productLabel: "Business : 配信先追加",
-    } as const;
+    return { paymentLink: isYearly ? PL_BUSINESS_YEARLY : PL_BUSINESS_MONTHLY, productLabel: "Business : 配信先追加" } as const;
   }
-  return {
-    priceId: isYearly ? PRICE_ADDON_LITE_YEARLY : PRICE_ADDON_LITE_MONTHLY,
-    paymentLink: isYearly ? PL_LITE_YEARLY : PL_LITE_MONTHLY,
-    productLabel: "Lite : 配信先追加",
-  } as const;
+  return { paymentLink: isYearly ? PL_LITE_YEARLY : PL_LITE_MONTHLY, productLabel: "Lite : 配信先追加" } as const;
 }
 
 async function getStripeCustomerIdFromDB(email?: string) {
@@ -116,6 +108,20 @@ function findAddonItemsByPrice(
   });
 }
 
+function resolveBaseFromSubscription(sub: Stripe.Subscription | null): { plan?: Plan; basePriceId?: string; interval?: "month" | "year" } {
+  if (!sub) return {};
+  const LITE = new Set(getLitePriceIds());
+  const BUS = new Set(getBusinessPriceIds());
+  for (const it of sub.items.data) {
+    const price: any = it.price as any;
+    const id = typeof price === "string" ? price : price?.id;
+    const interval = (price?.recurring?.interval || null) as "month" | "year" | null;
+    if (id && LITE.has(id)) return { plan: "lite", basePriceId: id, interval: (interval || undefined) as any };
+    if (id && BUS.has(id)) return { plan: "business", basePriceId: id, interval: (interval || undefined) as any };
+  }
+  return {};
+}
+
 async function collapseAndPickPrimaryItem(
   sub: Stripe.Subscription,
   matches: Stripe.SubscriptionItem[]
@@ -159,14 +165,18 @@ export async function POST(req: NextRequest) {
       ? body.additionalEmails
       : [];
 
-    // Find interval from active subscription
-    let interval: string | null = null;
+    // Resolve base price and interval strictly from active subscription
+    let interval: "month" | "year" | null = null;
+    let basePriceId: string | undefined;
+    let resolvedPlan: Plan = plan;
     let stripeCustomerId = await getStripeCustomerIdFromDB(ownerEmail);
+    let activeSub: Stripe.Subscription | null = null;
     if (stripeCustomerId) {
-      const sub = await findAnyActiveSubscription(stripeCustomerId);
-      if (sub) {
-        interval = sub.items?.data?.[0]?.price?.recurring?.interval ?? null;
-      }
+      activeSub = await findAnyActiveSubscription(stripeCustomerId);
+      const base = resolveBaseFromSubscription(activeSub);
+      if (base?.interval) interval = base.interval;
+      if (base?.basePriceId) basePriceId = base.basePriceId;
+      if (base?.plan) resolvedPlan = base.plan;
     } else {
       // 顧客IDが見つからない場合、デフォルトで月次を選択
       interval = "month";
@@ -180,7 +190,16 @@ export async function POST(req: NextRequest) {
     const requestedQty = validAdditionalEmails.length > 0 ? validAdditionalEmails.length : quantity;
     const qty = Math.min(10, Math.max(1, Math.floor(Number(requestedQty))));
 
-    const { priceId, paymentLink, productLabel } = pickPriceAndPL(plan, interval);
+    // Strict mapping: base price id -> addon price id
+    let priceId = getAddonPriceIdForBasePriceId(basePriceId, { interval });
+    if (!priceId) {
+      // Fallback by plan+interval (should not happen if ENV is correct)
+      priceId = getAddonPriceIdForPlan(resolvedPlan, interval) as string | undefined;
+    }
+    if (!priceId) {
+      return NextResponse.json({ error: "addon price mapping not found" }, { status: 400 });
+    }
+    const { paymentLink, productLabel } = pickPaymentLink(resolvedPlan, interval);
 
     // 価格タイプで Checkout mode を決める（通常は subscription）
     const price = await stripe.prices.retrieve(priceId);
@@ -206,7 +225,7 @@ export async function POST(req: NextRequest) {
         const pmSaved = await hasSavedPaymentMethod(stripeCustomerId);
 
         if (pmSaved) {
-          const sub = await findAnyActiveSubscription(stripeCustomerId);
+          const sub = activeSub ?? (await findAnyActiveSubscription(stripeCustomerId));
           const priceMatches = findAddonItemsByPrice(sub, priceId);
           const currentQty =
             priceMatches.reduce((s, it) => s + (it.quantity ?? 0), 0) ?? 0;

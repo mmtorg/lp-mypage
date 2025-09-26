@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { stripe } from "@/lib/stripe";
+import { getLitePriceIds, getBusinessPriceIds } from "@/lib/stripe-price-ids";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 
 export const runtime = "nodejs"; // Edge不可（署名検証にraw body必要）
@@ -137,16 +138,8 @@ export async function POST(req: NextRequest) {
               .map((s) => s.trim().toLowerCase())
               .filter(Boolean)
           );
-          const LITE_PRICE_IDS = (process.env.STRIPE_PRICE_IDS_LITE || "")
-            .split(",")
-            .map((s) => s.trim())
-            .filter(Boolean);
-          const BUSINESS_PRICE_IDS = (
-            process.env.STRIPE_PRICE_IDS_BUSINESS || ""
-          )
-            .split(",")
-            .map((s) => s.trim())
-            .filter(Boolean);
+          const LITE_PRICE_IDS = getLitePriceIds();
+          const BUSINESS_PRICE_IDS = getBusinessPriceIds();
 
           const inferPlanFromPriceId = async (
             priceId?: string | null

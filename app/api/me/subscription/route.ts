@@ -2,6 +2,8 @@ import { type NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { getSupabaseServer } from "@/lib/supabase-server";
 
+export const dynamic = 'force-dynamic';
+
 /**
  * ?email= を受けて current_plan を返す最小API
  * Supabase Auth を使わない前提に合わせ、user_id 依存を排除。

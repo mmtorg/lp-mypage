@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Script from "next/script";
+import Link from "next/link";
 import {
   Card,
   CardContent,
@@ -12,9 +13,10 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Loader2 } from "lucide-react";
+import { Loader2, Eye, EyeOff } from "lucide-react";
 import { PortalButton } from "@/app/mypage/_components/PortalButton";
 import { useToast } from "@/hooks/use-toast";
+import { getSupabaseBrowser } from "@/lib/supabase-browser";
 import {
   Dialog,
   DialogTrigger,
@@ -51,8 +53,9 @@ interface SubscriptionData {
   current_plan: Plan;
   email?: string;
   product_name?: string;
-  addon_unit_amount?: number;
-  addon_currency?: string;
+  unit_amount?: number;
+  currency?: string;
+  billing_interval?: "month" | "year" | null;
   recipients?: RecipientInfo[];
   purchased_items?: PurchasedItem[];
   is_trialing?: boolean;
@@ -65,6 +68,14 @@ export default function MyPage() {
   const [sub, setSub] = useState<SubscriptionData | null>(null);
   const [booting, setBooting] = useState(false); // セッション復元中の表示制御
   const [hydrated, setHydrated] = useState(false); // SSRと一致させるためのハイドレーション完了フラグ
+  const [authStage, setAuthStage] = useState<
+    null | "login" | "register" | "emailSent"
+  >(null);
+  const [authBusy, setAuthBusy] = useState(false);
+  const [password, setPassword] = useState("");
+  const [password2, setPassword2] = useState("");
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [isAuthed, setIsAuthed] = useState(false);
 
   const refreshByEmail = async (targetEmail?: string) => {
     const e = (targetEmail ?? email).trim();
@@ -80,6 +91,33 @@ export default function MyPage() {
       const data = (await res.json()) as SubscriptionData;
       setSub(data);
       setError(null);
+      // If user has an active/trialing plan, decide auth stage
+      try {
+        if (data.current_plan || data.is_trialing) {
+          const supabase = getSupabaseBrowser();
+          const { data: sessionRes } = await supabase.auth.getUser();
+          const authedEmail = sessionRes.user?.email?.toLowerCase();
+          if (authedEmail && authedEmail === e.toLowerCase()) {
+            setIsAuthed(true);
+            setAuthStage(null);
+          } else {
+            setIsAuthed(false);
+            // ask server if a user exists for this email
+            const chk = await fetch(
+              `/api/auth/check-user?email=${encodeURIComponent(e)}`
+            );
+            const json = await chk.json();
+            if (chk.ok && json && typeof json.exists === "boolean") {
+              setAuthStage(json.exists ? "login" : "register");
+            } else {
+              setAuthStage("login");
+            }
+          }
+        } else {
+          setIsAuthed(false);
+          setAuthStage(null);
+        }
+      } catch {}
       try {
         sessionStorage.setItem(SESSION_EMAIL_KEY, e);
       } catch {}
@@ -126,6 +164,32 @@ export default function MyPage() {
       }
       const data = (await res.json()) as SubscriptionData;
       setSub(data);
+      // decide auth stage similar to refreshByEmail
+      try {
+        if (data.current_plan || data.is_trialing) {
+          const supabase = getSupabaseBrowser();
+          const { data: sessionRes } = await supabase.auth.getUser();
+          const authedEmail = sessionRes.user?.email?.toLowerCase();
+          if (authedEmail && authedEmail === email.trim().toLowerCase()) {
+            setIsAuthed(true);
+            setAuthStage(null);
+          } else {
+            setIsAuthed(false);
+            const chk = await fetch(
+              `/api/auth/check-user?email=${encodeURIComponent(email.trim())}`
+            );
+            const json = await chk.json();
+            if (chk.ok && json && typeof json.exists === "boolean") {
+              setAuthStage(json.exists ? "login" : "register");
+            } else {
+              setAuthStage("login");
+            }
+          }
+        } else {
+          setIsAuthed(false);
+          setAuthStage(null);
+        }
+      } catch {}
       try {
         sessionStorage.setItem(SESSION_EMAIL_KEY, email.trim());
       } catch {}
@@ -139,9 +203,7 @@ export default function MyPage() {
   return (
     <div className="min-h-screen bg-gray-50 py-8 px-4">
       <div
-        className={`mx-auto ${
-          sub?.is_trialing ? "max-w-5xl" : "max-w-2xl"
-        } transition-all duration-300`}
+        className={`mx-auto ${sub?.is_trialing ? "max-w-5xl" : "max-w-2xl"}`}
       >
         <div className="mb-8 text-center">
           <h1 className="mb-2 text-3xl font-bold text-gray-900">マイページ</h1>
@@ -208,39 +270,431 @@ export default function MyPage() {
                       "契約状況を確認"
                     )}
                   </Button>
+                  <Button asChild variant="outline" className="w-full mt-2">
+                    <Link href="/">トップページに戻る</Link>
+                  </Button>
                 </form>
               </CardContent>
             </Card>
           ))}
 
-        {sub && (
+        {sub && isAuthed && (sub.current_plan || sub.is_trialing) && (
           <ResolvedView
             email={sub.email || email}
             plan={sub.current_plan}
             productName={sub.product_name}
-            addonUnitAmount={sub.addon_unit_amount}
-            addonCurrency={sub.addon_currency}
+            unitAmount={sub.unit_amount}
+            currency={sub.currency}
+            billingInterval={sub.billing_interval ?? undefined}
             recipients={sub.recipients}
             purchasedItems={sub.purchased_items}
             isTrialing={sub.is_trialing}
             onRefetch={refreshByEmail}
-            onReset={() => setSub(null)} // 追加：戻るボタンで sub をクリア
+            onLogout={async () => {
+              const supabase = getSupabaseBrowser();
+              await supabase.auth.signOut();
+              try {
+                sessionStorage.removeItem(SESSION_EMAIL_KEY);
+              } catch {}
+              setIsAuthed(false);
+              setAuthStage(null);
+              setSub(null);
+              setPassword("");
+            }}
           />
+        )}
+
+        {sub && !isAuthed && (sub.current_plan || sub.is_trialing) && (
+          <div className="mx-auto max-w-2xl">
+            <AuthGate
+              stage={authStage}
+              busy={authBusy}
+              error={authError}
+              email={sub.email || email}
+              password={password}
+              password2={password2}
+              onChangePassword={setPassword}
+              onChangePassword2={setPassword2}
+              onReset={() => {
+                setSub(null);
+                setAuthStage(null);
+                setPassword("");
+                setPassword2("");
+                setAuthError(null);
+              }}
+              onLogin={async () => {
+                setAuthError(null);
+                setAuthBusy(true);
+                try {
+                  const supabase = getSupabaseBrowser();
+                  const { error } = await supabase.auth.signInWithPassword({
+                    email: (sub.email || email).trim(),
+                    password,
+                  });
+                  if (error) throw error;
+                  // Verify email match and refresh
+                  const { data: me } = await supabase.auth.getUser();
+                  const authedEmail = me.user?.email?.toLowerCase();
+                  if (
+                    authedEmail &&
+                    authedEmail === (sub.email || email).trim().toLowerCase()
+                  ) {
+                    setIsAuthed(true);
+                    setAuthStage(null);
+                    await refreshByEmail(sub.email || email);
+                  } else {
+                    setAuthError("メールアドレスが一致しませんでした");
+                  }
+                } catch (err) {
+                  setAuthError(
+                    err instanceof Error
+                      ? err.message
+                      : "ログインに失敗しました"
+                  );
+                } finally {
+                  setAuthBusy(false);
+                }
+              }}
+              onRegister={async () => {
+                const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/;
+                if (!password || password !== password2) {
+                  setAuthError("パスワードが一致しません");
+                  return;
+                }
+                if (!passwordRegex.test(password)) {
+                  setAuthError(
+                    "パスワードは8文字以上で、大文字、小文字、数字をそれぞれ1つ以上含める必要があります。"
+                  );
+                  return;
+                }
+                setAuthError(null);
+                setAuthBusy(true);
+                try {
+                  const supabase = getSupabaseBrowser();
+                  // Determine redirect base origin (strip path if env has one)
+                  let origin =
+                    process.env.NEXT_PUBLIC_APP_URL ||
+                    (typeof window !== "undefined"
+                      ? window.location.origin
+                      : undefined);
+                  try {
+                    if (origin) origin = new URL(origin).origin;
+                  } catch {}
+                  const { error } = await supabase.auth.signUp({
+                    email: (sub.email || email).trim(),
+                    password,
+                    options: origin
+                      ? { emailRedirectTo: `${origin}/auth/callback` }
+                      : undefined,
+                  });
+                  if (error) throw error;
+                  setAuthStage("emailSent");
+                } catch (err) {
+                  setAuthError(
+                    err instanceof Error ? err.message : "登録に失敗しました"
+                  );
+                } finally {
+                  setAuthBusy(false);
+                }
+              }}
+              onForgot={async () => {
+                setAuthError(null);
+                setAuthBusy(true);
+                try {
+                  const supabase = getSupabaseBrowser();
+                  let origin =
+                    process.env.NEXT_PUBLIC_APP_URL ||
+                    (typeof window !== "undefined"
+                      ? window.location.origin
+                      : undefined);
+                  try {
+                    if (origin) origin = new URL(origin).origin;
+                  } catch {}
+                  const { error } = await supabase.auth.resetPasswordForEmail(
+                    (sub.email || email).trim(),
+                    origin
+                      ? { redirectTo: `${origin}/auth/callback` }
+                      : undefined
+                  );
+                  if (error) throw error;
+                  setAuthStage("emailSent");
+                } catch (err) {
+                  setAuthError(
+                    err instanceof Error
+                      ? err.message
+                      : "メール送信に失敗しました"
+                  );
+                } finally {
+                  setAuthBusy(false);
+                }
+              }}
+            />
+          </div>
+        )}
+
+        {sub && !sub.current_plan && !sub.is_trialing && (
+          <Card className="rounded-2xl border-0 shadow-md">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-xl">
+                契約情報が見つかりませんでした
+              </CardTitle>
+              <CardDescription>{sub.email || email}</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <NoSubscription onReset={() => setSub(null)} />
+            </CardContent>
+          </Card>
         )}
       </div>
     </div>
   );
 }
 
+type AuthGateProps = {
+  stage: null | "login" | "register" | "emailSent";
+  busy: boolean;
+  error: string | null;
+  email: string;
+  password: string;
+  password2: string;
+  onChangePassword: (v: string) => void;
+  onChangePassword2: (v: string) => void;
+  onLogin: () => void | Promise<void>;
+  onRegister: () => void | Promise<void>;
+  onForgot: () => void | Promise<void>;
+  onReset: () => void;
+};
+
+function AuthGate({
+  stage,
+  busy,
+  error,
+  email,
+  password,
+  password2,
+  onChangePassword,
+  onChangePassword2,
+  onLogin,
+  onRegister,
+  onForgot,
+  onReset,
+}: AuthGateProps) {
+  const [showPassword, setShowPassword] = useState(false);
+  const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/;
+
+  if (stage === "emailSent") {
+    return (
+      <Card className="rounded-2xl border-0 shadow-md">
+        <CardHeader>
+          <CardTitle className="text-xl">確認メールを送信しました</CardTitle>
+          <CardDescription>
+            {email}{" "}
+            宛に送信された確認リンクをクリックして、パスワード登録を完了してください。
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center justify-between">
+            <Button variant="outline" onClick={onReset}>
+              戻る
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (stage === "register") {
+    return (
+      <Card className="rounded-2xl border-0 shadow-md">
+        <CardHeader>
+          <CardTitle className="text-xl">パスワードを設定</CardTitle>
+          <CardDescription>
+            {email}{" "}
+            のアカウントを作成します。パスワード設定後、メールに届く確認リンクのクリックで登録・サインインが完了します。
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="pw1">パスワード</Label>
+              <div className="relative">
+                <Input
+                  id="pw1"
+                  type={showPassword ? "text" : "password"}
+                  value={password}
+                  onChange={(e) => onChangePassword(e.target.value)}
+                  disabled={busy}
+                  className="pr-10"
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="absolute inset-y-0 right-0 flex items-center px-3"
+                  onClick={() => setShowPassword((prev) => !prev)}
+                  disabled={busy}
+                >
+                  {showPassword ? (
+                    <EyeOff className="h-4 w-4 text-gray-500" />
+                  ) : (
+                    <Eye className="h-4 w-4 text-gray-500" />
+                  )}
+                </Button>
+              </div>
+              <p className="text-sm text-gray-500">
+                パスワードは8文字以上で、大文字、小文字、数字をそれぞれ1つ以上含める必要があります。
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="pw2">パスワード（確認）</Label>
+              <div className="relative">
+                <Input
+                  id="pw2"
+                  type={showPassword ? "text" : "password"}
+                  value={password2}
+                  onChange={(e) => onChangePassword2(e.target.value)}
+                  disabled={busy}
+                  className="pr-10"
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="absolute inset-y-0 right-0 flex items-center px-3"
+                  onClick={() => setShowPassword((prev) => !prev)}
+                  disabled={busy}
+                >
+                  {showPassword ? (
+                    <EyeOff className="h-4 w-4 text-gray-500" />
+                  ) : (
+                    <Eye className="h-4 w-4 text-gray-500" />
+                  )}
+                </Button>
+              </div>
+            </div>
+            {error && (
+              <div className="rounded-lg bg-red-50 p-3 text-sm text-red-600">
+                {error}
+              </div>
+            )}
+            <div className="flex items-center justify-between">
+              <Button variant="outline" onClick={onReset} disabled={busy}>
+                戻る
+              </Button>
+              <Button
+                onClick={onRegister}
+                disabled={
+                  busy ||
+                  !password ||
+                  password !== password2 ||
+                  !passwordRegex.test(password)
+                }
+              >
+                {busy ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" /> 送信中...
+                  </>
+                ) : (
+                  "メールで登録を確定"
+                )}
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (stage === "login") {
+    return (
+      <Card className="rounded-2xl border-0 shadow-md">
+        <CardHeader>
+          <CardTitle className="text-xl">ログイン</CardTitle>
+          <CardDescription>
+            {email} のパスワードを入力してください
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="password">パスワード</Label>
+              <div className="relative">
+                <Input
+                  id="password"
+                  name="password"
+                  type={showPassword ? "text" : "password"}
+                  autoComplete="current-password"
+                  required
+                  value={password}
+                  onChange={(e) => onChangePassword(e.target.value)}
+                  className="pr-10"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute inset-y-0 right-0 px-3 flex items-center"
+                  aria-label={
+                    showPassword ? "パスワードを非表示" : "パスワードを表示"
+                  }
+                >
+                  {showPassword ? (
+                    <EyeOff className="h-4 w-4 text-gray-500" />
+                  ) : (
+                    <Eye className="h-4 w-4 text-gray-500" />
+                  )}
+                </button>
+              </div>
+            </div>{" "}
+            {error && (
+              <div className="rounded-lg bg-red-50 p-3 text-sm text-red-600">
+                {error}
+              </div>
+            )}
+            <div className="flex items-center justify-between">
+              <Button variant="outline" onClick={onReset} disabled={busy}>
+                戻る
+              </Button>
+              <Button onClick={onLogin} disabled={busy || !password}>
+                {busy ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />{" "}
+                    ログイン中...
+                  </>
+                ) : (
+                  "ログイン"
+                )}
+              </Button>
+            </div>
+            <div className="text-right">
+              <button
+                type="button"
+                className="text-sm text-blue-600 hover:underline"
+                onClick={onForgot}
+                disabled={busy}
+              >
+                パスワードをお忘れですか？
+              </button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  // no stage (should not happen when gated)
+  return null;
+}
+
 type ResolvedViewProps = {
   email: string;
   plan: Plan;
   productName?: string;
-  addonUnitAmount?: number;
-  addonCurrency?: string;
+  unitAmount?: number;
+  currency?: string;
+  billingInterval?: "month" | "year";
   recipients?: RecipientInfo[];
   purchasedItems?: PurchasedItem[];
-  onReset: () => void;
+  onLogout: () => void | Promise<void>;
   onRefetch?: (targetEmail?: string) => void | Promise<void>;
   isTrialing?: boolean;
 };
@@ -249,11 +703,12 @@ function ResolvedView({
   email,
   plan,
   productName,
-  addonUnitAmount,
-  addonCurrency,
+  unitAmount,
+  currency,
+  billingInterval,
   recipients,
   purchasedItems,
-  onReset,
+  onLogout,
   onRefetch,
   isTrialing,
 }: ResolvedViewProps) {
@@ -267,12 +722,15 @@ function ResolvedView({
   const [currentProductName, setCurrentProductName] = useState<
     string | undefined
   >(productName);
-  const [currentAddonUnitAmount, setCurrentAddonUnitAmount] = useState<
+  const [currentUnitAmount, setCurrentUnitAmount] = useState<
     number | undefined
-  >(addonUnitAmount);
-  const [currentAddonCurrency, setCurrentAddonCurrency] = useState<
-    string | undefined
-  >(addonCurrency);
+  >(unitAmount);
+  const [currentCurrency, setCurrentCurrency] = useState<string | undefined>(
+    currency
+  );
+  const [currentBillingInterval, setCurrentBillingInterval] = useState<
+    "month" | "year" | undefined
+  >(billingInterval);
 
   useEffect(() => {
     setRecipientList(recipients ?? []);
@@ -287,12 +745,16 @@ function ResolvedView({
   }, [productName]);
 
   useEffect(() => {
-    setCurrentAddonUnitAmount(addonUnitAmount);
-  }, [addonUnitAmount]);
+    setCurrentUnitAmount(unitAmount);
+  }, [unitAmount]);
 
   useEffect(() => {
-    setCurrentAddonCurrency(addonCurrency);
-  }, [addonCurrency]);
+    setCurrentCurrency(currency);
+  }, [currency]);
+
+  useEffect(() => {
+    setCurrentBillingInterval(billingInterval);
+  }, [billingInterval]);
 
   const sortedRecipients = useMemo(() => {
     const unique = new Map<string, RecipientInfo>();
@@ -369,8 +831,8 @@ function ResolvedView({
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" onClick={onReset}>
-                戻る
+              <Button variant="outline" size="sm" onClick={onLogout}>
+                ログアウト
               </Button>
             </div>
           </div>
@@ -428,7 +890,7 @@ function ResolvedView({
           <CardDescription>{email}</CardDescription>
         </CardHeader>
         <CardContent>
-          <NoSubscription onReset={onReset} />
+          <NoSubscription />
         </CardContent>
       </Card>
     );
@@ -452,7 +914,7 @@ function ResolvedView({
                     className="flex items-center justify-between rounded-md bg-gray-50 px-3 py-2"
                   >
                     <span>{item.name}</span>
-                    <span className="text-gray-600">×{item.quantity}</span>
+                    <span className="ml-2 text-gray-600">×{item.quantity}</span>
                   </li>
                 ))}
               </ul>
@@ -465,8 +927,8 @@ function ResolvedView({
             {/* Email hidden per request */}
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={onReset}>
-              戻る
+            <Button variant="outline" size="sm" onClick={onLogout}>
+              ログアウト
             </Button>
           </div>
         </div>
@@ -523,8 +985,9 @@ function ResolvedView({
             <AddRecipientsModal
               email={email}
               plan={plan}
-              addonUnitAmount={currentAddonUnitAmount}
-              addonCurrency={currentAddonCurrency}
+              unitAmount={currentUnitAmount}
+              currency={currentCurrency}
+              billingInterval={currentBillingInterval}
               existingRecipients={sortedRecipients}
               onRefetch={() => onRefetch?.(email)}
             />
@@ -571,8 +1034,9 @@ function ResolvedView({
 type AddRecipientsModalProps = {
   email: string;
   plan: Plan;
-  addonUnitAmount?: number;
-  addonCurrency?: string;
+  unitAmount?: number;
+  currency?: string;
+  billingInterval?: "month" | "year";
   existingRecipients: RecipientInfo[];
   onRefetch?: () => void | Promise<void>;
 };
@@ -580,8 +1044,9 @@ type AddRecipientsModalProps = {
 function AddRecipientsModal({
   email,
   plan,
-  addonUnitAmount,
-  addonCurrency,
+  unitAmount,
+  currency,
+  billingInterval,
   existingRecipients,
   onRefetch,
 }: AddRecipientsModalProps) {
@@ -796,11 +1261,10 @@ function AddRecipientsModal({
             </DialogDescription>
           </DialogHeader>
           <DialogBody className="space-y-5">
-            {typeof addonUnitAmount !== "undefined" && (
+            {typeof unitAmount !== "undefined" && (
               <div className="rounded-md bg-gray-50 p-3 text-sm text-gray-700">
-                追加料金（月額）：
-                {formatCurrency(addonUnitAmount, addonCurrency)} ／
-                1メールアドレス
+                追加料金（{billingInterval === "year" ? "年額" : "月額"}）：
+                {formatCurrency(unitAmount, currency)} ／ 1メールアドレス
               </div>
             )}
             <div className="space-y-2">
@@ -902,7 +1366,7 @@ function AddRecipientsModal({
               追加購入確定
             </DialogTitle>
             <DialogDescription className="mb-6 leading-relaxed">
-              {formatCurrency((addonUnitAmount || 0) * count, addonCurrency)}{" "}
+              {formatCurrency((unitAmount || 0) * count, currency)}{" "}
               のサブスクリプション追加購入を確定します。
               {awaitingCheckoutRedirect && (
                 <span className="mt-4 block text-sm text-muted-foreground">
@@ -1476,7 +1940,7 @@ function formatCurrency(amount: number, currency?: string) {
   }
 }
 
-function NoSubscription({ onReset }: { onReset: () => void }) {
+function NoSubscription({ onReset }: { onReset?: () => void }) {
   return (
     <div className="space-y-4">
       <p className="text-gray-700">
@@ -1485,9 +1949,11 @@ function NoSubscription({ onReset }: { onReset: () => void }) {
       <Button asChild className="w-full">
         <a href="/">トップページへ</a>
       </Button>
-      <Button variant="outline" onClick={onReset} className="w-full">
-        戻る
-      </Button>
+      {onReset ? (
+        <Button variant="outline" onClick={onReset} className="w-full">
+          メールアドレス入力画面へ
+        </Button>
+      ) : null}
     </div>
   );
 }

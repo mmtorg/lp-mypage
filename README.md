@@ -52,9 +52,16 @@ NEXT_PUBLIC_PL_ADDON_BUS_SEAT_YEARLY=https://buy.stripe.com/your_bus_addon_yearl
 STRIPE_SECRET_KEY=sk_live_or_test_your_stripe_secret_key
 STRIPE_WEBHOOK_SECRET=whsec_your_webhook_secret
 
-# 必須: Stripe価格ID
+# 必須: Stripe価格ID（いずれかの方法で設定）
+# 方法A: 既存仕様（CSVで月次・年次を含める）
 STRIPE_PRICE_IDS_LITE=price_xxx,price_yyy
 STRIPE_PRICE_IDS_BUSINESS=price_aaa,price_bbb
+# 方法B: 月次・年次を分割して管理（重複記載を回避）。
+# 両方を設定した場合は「方法A（CSV）」が優先されます。
+STRIPE_PRICE_ID_LITE_MONTHLY=price_lite_monthly
+STRIPE_PRICE_ID_LITE_YEARLY=price_lite_yearly
+STRIPE_PRICE_ID_BUSINESS_MONTHLY=price_biz_monthly
+STRIPE_PRICE_ID_BUSINESS_YEARLY=price_biz_yearly
 STRIPE_ADDON_PRICE_ID_LITE_MONTHLY=price_lite_addon_monthly
 STRIPE_ADDON_PRICE_ID_LITE_YEARLY=price_lite_addon_yearly
 STRIPE_ADDON_PRICE_ID_BUSINESS_MONTHLY=price_biz_addon_monthly

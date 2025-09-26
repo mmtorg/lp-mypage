@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { stripe } from "@/lib/stripe";
 import { supabaseAdmin } from "@/lib/supabase-admin";
+import { getLitePriceIds, getBusinessPriceIds, getAddonPriceIdForBasePriceId, getAddonPriceIdForPlan } from "@/lib/stripe-price-ids";
+
+export const dynamic = 'force-dynamic';
 
 type Plan = "lite" | "business" | null;
 
@@ -63,29 +66,37 @@ async function collectSubscriptionItems(
               (product as any)?.name ??
               price?.nickname ??
               (typeof price?.product === "string" ? price.product : price?.id ?? "不明な商品");
-    
+
+            // 金額の付与
             if (price.unit_amount && price.currency) {
               let displayAmount = price.unit_amount;
               // JPYの場合は100で割る必要がない
               if (price.currency.toLowerCase() !== 'jpy') {
                 displayAmount = price.unit_amount / 100;
               }
-    
+
               const formatter = new Intl.NumberFormat('ja-JP', {
                 style: 'currency',
                 currency: price.currency.toUpperCase(),
-                minimumFractionDigits: 0, // JPYの場合は小数点以下を表示しない
-                maximumFractionDigits: price.currency.toLowerCase() === 'jpy' ? 0 : 2, // JPY以外は2桁
+                minimumFractionDigits: 0,
+                maximumFractionDigits: price.currency.toLowerCase() === 'jpy' ? 0 : 2,
               });
               const formattedUnitAmount = formatter.format(displayAmount);
               formattedName = `${formattedName} ${formattedUnitAmount}`;
             }
-    
+
+            // 間隔の付与（月額/年額）
+            try {
+              const rawInterval = String(price?.recurring?.interval || "").toLowerCase();
+              const suffix = rawInterval === 'year' ? ' (年額)' : rawInterval === 'month' ? ' (月額)' : '';
+              if (suffix) formattedName = `${formattedName}${suffix}`;
+            } catch {}
+
             const itemType = inferItemType(product);
             if (itemType === "base" && !primaryPrice && price.unit_amount) {
               primaryPrice = { unit_amount: price.unit_amount, currency: price.currency };
             }
-    
+
             items.push({
               name: formattedName,
               quantity,
@@ -107,9 +118,9 @@ function envList(name: string): string[] {
     .filter(Boolean);
 }
 
-// Price ID mapping for plan detection
-const LITE_PRICE_IDS = envList("STRIPE_PRICE_IDS_LITE");
-const BUSINESS_PRICE_IDS = envList("STRIPE_PRICE_IDS_BUSINESS");
+// Price ID mapping for plan detection (supports combined or split vars)
+const LITE_PRICE_IDS = getLitePriceIds();
+const BUSINESS_PRICE_IDS = getBusinessPriceIds();
 const VALID_STATUSES = new Set(
   envList("SUBSCRIPTION_VALID_STATUSES").map((s) => s.toLowerCase())
 );
@@ -415,8 +426,20 @@ export async function GET(req: NextRequest) {
     }
 
     // Add-on price lookup for UI (optional)
-    let unit_amount: number | undefined = primaryPriceInfo?.unit_amount;
-    let currency: string | undefined = primaryPriceInfo?.currency;
+    // For add-on UI, show add-on unit price based on base plan
+    let unit_amount: number | undefined;
+    let currency: string | undefined;
+    try {
+      const basePriceId = (purchasedItems.find((it) => it.type === "base")?.price_id || undefined) as string | undefined;
+      const addonPriceId =
+        getAddonPriceIdForBasePriceId(basePriceId, { interval: (primaryInterval as any) }) ||
+        (currentPlan ? getAddonPriceIdForPlan(currentPlan, (primaryInterval as any)) : undefined);
+      if (addonPriceId) {
+        const price = await stripe.prices.retrieve(addonPriceId);
+        unit_amount = (price as any)?.unit_amount ?? undefined;
+        currency = (price as any)?.currency ?? undefined;
+      }
+    } catch {}
 
     if (debugMode) console.log("[sub-by-email] done", { email, currentPlan, productName, unit_amount, currency, purchasedCount: purchasedItems.length });
     if (debugMode && debug) {
@@ -434,6 +457,7 @@ export async function GET(req: NextRequest) {
             recipients,
             purchased_items: purchasedItems,
             is_trialing: is_trialing,
+            billing_interval: (primaryInterval as any) || null,
             debug,
           }
         : {
@@ -445,6 +469,7 @@ export async function GET(req: NextRequest) {
             recipients,
             purchased_items: purchasedItems,
             is_trialing: is_trialing,
+            billing_interval: (primaryInterval as any) || null,
           }
     );
   } catch (e) {

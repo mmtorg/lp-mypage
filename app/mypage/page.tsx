@@ -271,7 +271,9 @@ export default function MyPage() {
                     )}
                   </Button>
                   <Button asChild variant="outline" className="w-full mt-2">
-                    <Link href="/">トップページに戻る</Link>
+                    <a href={process.env.NEXT_PUBLIC_APP_URL || "/"}>
+                      トップページに戻る
+                    </a>
                   </Button>
                 </form>
               </CardContent>

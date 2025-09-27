@@ -6,3 +6,7 @@ compatibility_flags = ["nodejs_compat"]  # Node.js API互換を有効化
 [assets]
 directory = ".open-next/assets"
 binding = "ASSETS"
+
+# wrangler.toml (wrangler v3.88.0^)
+[observability.logs]
+enabled = true

@@ -452,6 +452,8 @@ export default function MyPage() {
   );
 }
 
+// (UIゲートは取り消し)
+
 type AuthGateProps = {
   stage: null | "login" | "register" | "emailSent";
   busy: boolean;

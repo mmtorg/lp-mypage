@@ -183,6 +183,32 @@ export async function POST(req: NextRequest) {
                   { subId, status, inferred }
                 );
               }
+
+              // If this is a trial product via Payment Link, enforce one-time eligibility per email/customer.
+              try {
+                const isTrialProduct = await isTrialSubscription(sub as any);
+                if (isTrialProduct) {
+                  const alreadyHadTrial = await hasPriorTrialForCustomerOrEmail(
+                    customerId,
+                    customerEmail,
+                    subId
+                  );
+                  if (alreadyHadTrial) {
+                    console.warn(
+                      "[webhook] duplicate trial detected at checkout; canceling subscription",
+                      { subId, customerId, customerEmail }
+                    );
+                    try {
+                      await stripe.subscriptions.update(subId, {
+                        metadata: { canceled_reason: "duplicate_trial" },
+                      });
+                    } catch {}
+                    await stripe.subscriptions.cancel(subId);
+                  }
+                }
+              } catch (e) {
+                console.warn("[webhook] duplicate-trial check failed (checkout)", e);
+              }
             } else if (session?.id) {
               // Fallback: try line items to guess plan (no status check possible here)
               // To honour "valid-only" policy, we do NOT persist if we cannot validate status.
@@ -577,6 +603,40 @@ export async function POST(req: NextRequest) {
           console.warn("Failed to infer plan type", e);
         }
 
+        // Enforce: one-time free trial per email/customer
+        try {
+          const isTrialProduct = await isTrialSubscription(sub);
+          if (isTrialProduct && event.type === "customer.subscription.created") {
+            // Retrieve customer email (may be null)
+            let ownerEmail: string | null = null;
+            try {
+              ownerEmail = ((await stripe.customers.retrieve(customerId)) as any)?.email ?? null;
+            } catch {}
+            const alreadyHadTrial = await hasPriorTrialForCustomerOrEmail(
+              customerId,
+              ownerEmail,
+              sub.id
+            );
+            if (alreadyHadTrial) {
+              console.warn(
+                "[webhook] duplicate trial detected; canceling subscription",
+                { subscription: sub.id, customerId, ownerEmail }
+              );
+              try {
+                await stripe.subscriptions.update(sub.id, {
+                  metadata: { canceled_reason: "duplicate_trial" },
+                });
+              } catch {}
+              await stripe.subscriptions.cancel(sub.id);
+              // After cancel, continue to clean-up paths below as needed (no throw)
+            }
+          }
+        } catch (e) {
+          console.warn("[webhook] duplicate-trial check failed (sub.*)", e);
+        }
+
+        // Note: trial end behavior (cancel if missing payment method) is managed on Stripe settings now.
+
         // Keep planType as product tier; use is_trialing flag for trial state
 
         const isValid = VALID_STATUSES.has(String(status).toLowerCase());
@@ -601,6 +661,7 @@ export async function POST(req: NextRequest) {
                 email: ownerEmail,
                 stripe_customer_id: customerId,
                 current_plan: planType,
+                is_trialing: is_trialing,
                 updated_at: nowIso,
               })
               .eq("id", bySub.data.id)
@@ -629,6 +690,7 @@ export async function POST(req: NextRequest) {
                   stripe_customer_id: customerId,
                   stripe_subscription_id: sub.id,
                   current_plan: planType,
+                  is_trialing: is_trialing,
                   updated_at: nowIso,
                 })
                 .select("id")
@@ -646,6 +708,7 @@ export async function POST(req: NextRequest) {
                 .update({
                   email: ownerEmail,
                   current_plan: planType,
+                  is_trialing: is_trialing,
                   updated_at: nowIso,
                 })
                 .eq("id", byCust.data.id)
@@ -661,6 +724,7 @@ export async function POST(req: NextRequest) {
                 stripe_customer_id: customerId,
                 stripe_subscription_id: sub.id,
                 current_plan: planType,
+                is_trialing: is_trialing,
                 updated_at: nowIso,
               })
               .select("id")
@@ -785,4 +849,66 @@ async function removePendingRecipients(customerId: string) {
   } catch (err) {
     console.error("[webhook] failed to remove pending recipients", err);
   }
+}
+
+// --- Helpers ---
+async function isTrialSubscription(sub: any): Promise<boolean> {
+  const TRIAL_PRODUCTS = new Set(
+    String(process.env.STRIPE_TRIAL_PRODUCT_IDS || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+  );
+  if (TRIAL_PRODUCTS.size === 0) return false;
+  try {
+    const item = sub?.items?.data?.[0];
+    const prodAny = item?.price?.product as any;
+    const productId: string | undefined = typeof prodAny === "string" ? prodAny : prodAny?.id;
+    if (!productId) return false;
+    return TRIAL_PRODUCTS.has(productId);
+  } catch {
+    return false;
+  }
+}
+
+async function hasPriorTrialForCustomerOrEmail(
+  customerId: string | null,
+  email: string | null,
+  excludeSubId?: string
+): Promise<boolean> {
+  // 1) Check the given customer first
+  try {
+    if (customerId) {
+      const subs = await stripe.subscriptions.list({ customer: customerId, status: "all", limit: 100 });
+      for (const s of subs.data) {
+        if (excludeSubId && s.id === excludeSubId) continue;
+        const trial = await isTrialSubscription(s as any);
+        if (trial) return true;
+      }
+    }
+  } catch (e) {
+    console.warn("[webhook] hasPriorTrial: customer scan failed", e);
+  }
+
+  // 2) Optional: scan other customers by the same email (lifetime constraint per email)
+  try {
+    if (email) {
+      const found = await stripe.customers.search({
+        // Match exact email; exclude the same customer when known
+        query: customerId ? `email:"${email}" AND -id:"${customerId}"` : `email:"${email}"`,
+        limit: 20,
+      });
+      for (const c of found.data) {
+        const subs = await stripe.subscriptions.list({ customer: c.id, status: "all", limit: 100 });
+        for (const s of subs.data) {
+          const trial = await isTrialSubscription(s as any);
+          if (trial) return true;
+        }
+      }
+    }
+  } catch (e) {
+    console.warn("[webhook] hasPriorTrial: email scan failed", e);
+  }
+
+  return false;
 }

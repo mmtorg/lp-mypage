@@ -32,7 +32,7 @@ import {
 const MAX_ADDITIONAL_RECIPIENTS = 10;
 const SESSION_EMAIL_KEY = "mypage:lastEmail:session";
 
-type Plan = "lite" | "business" | null;
+type Plan = "lite" | "business" | "trial" | null;
 
 type RecipientInfo = {
   email: string;

@@ -5,7 +5,7 @@ import { getLitePriceIds, getBusinessPriceIds, getAddonPriceIdForBasePriceId, ge
 
 export const dynamic = 'force-dynamic';
 
-type Plan = "lite" | "business" | null;
+type Plan = "lite" | "business" | "trial" | null;
 
 type PurchasedItem = {
   name: string;
@@ -121,6 +121,7 @@ function envList(name: string): string[] {
 // Price ID mapping for plan detection (supports combined or split vars)
 const LITE_PRICE_IDS = getLitePriceIds();
 const BUSINESS_PRICE_IDS = getBusinessPriceIds();
+const TRIAL_PRODUCT_IDS = new Set(envList("STRIPE_TRIAL_PRODUCT_IDS"));
 const VALID_STATUSES = new Set(
   envList("SUBSCRIPTION_VALID_STATUSES").map((s) => s.toLowerCase())
 );
@@ -186,7 +187,7 @@ export async function GET(req: NextRequest) {
     try {
       const { data: cached } = await supabaseAdmin
         .from("user_stripe")
-        .select("current_plan, email, updated_at, stripe_customer_id, is_trialing")
+        .select("current_plan, email, updated_at, stripe_customer_id")
         .eq("email", email)
         .maybeSingle();
       if (debugMode) debug.cached = cached ?? null;
@@ -228,14 +229,14 @@ export async function GET(req: NextRequest) {
           console.warn("[sub-by-email] failed to fetch recipients (cache)", err);
         }
         return NextResponse.json({
-          current_plan: cached.current_plan,
+          current_plan: cached.current_plan as Plan,
           email,
           product_name: productName,
           unit_amount,
           currency,
           recipients,
           purchased_items: purchasedItems,
-          is_trialing: Boolean((cached as any)?.is_trialing),
+          is_trialing: (cached.current_plan as any) === "trial",
         });
       }
 
@@ -278,14 +279,14 @@ export async function GET(req: NextRequest) {
             console.warn("[sub-by-email] failed to fetch recipients (cache)", err);
           }
           return NextResponse.json({
-            current_plan: cached.current_plan,
+            current_plan: cached.current_plan as Plan,
             email,
             product_name: productName,
             unit_amount,
             currency,
             recipients,
             purchased_items: purchasedItems,
-            is_trialing: Boolean((cached as any)?.is_trialing),
+            is_trialing: (cached.current_plan as any) === "trial",
           });
         } else if (debugMode) {
           console.log("[sub-by-email] bypass cache (stale or null)", { ageMs, cachedPlan: cached.current_plan });
@@ -324,6 +325,7 @@ export async function GET(req: NextRequest) {
     let primaryCaptured = false;
     let hasBusiness = false;
     let hasLite = false;
+    let hasTrial = false;
     let is_trialing = false;
     let primaryInterval: string | undefined;
     let primaryPriceInfo: { unit_amount?: number; currency?: string } | undefined;
@@ -340,13 +342,21 @@ export async function GET(req: NextRequest) {
       }
       const valids = all.data.filter((s) => VALID_STATUSES.has(String(s.status).toLowerCase()));
       for (const sub of valids) {
-        if (sub.status === "trialing") is_trialing = true;
+        if (sub.status === "trialing") {
+          is_trialing = true;
+          hasTrial = true;
+        }
         try {
           const inferred = await inferPlanFromSubscription(sub);
           if (inferred === "business") hasBusiness = true;
           if (inferred === "lite") hasLite = true;
           const described = await collectSubscriptionItems(sub);
           purchasedItems.push(...described.items);
+          if (!hasTrial && TRIAL_PRODUCT_IDS.size > 0) {
+            if (described.items.some((it) => it.product_id && TRIAL_PRODUCT_IDS.has(it.product_id))) {
+              hasTrial = true;
+            }
+          }
           if (!primaryCaptured && described.primaryName) {
             productName = described.primaryName;
             primaryCaptured = true;
@@ -363,7 +373,7 @@ export async function GET(req: NextRequest) {
       }
     }
     // Decide representative plan for UI (prefer business if any)
-    currentPlan = hasBusiness ? "business" : hasLite ? "lite" : null;
+    currentPlan = hasBusiness ? "business" : hasLite ? "lite" : hasTrial ? "trial" : null;
 
     // Upsert user_stripe (no Supabase Auth) and ensure owner recipient
     let upsertedUserStripeId: number | undefined;
@@ -374,7 +384,6 @@ export async function GET(req: NextRequest) {
       };
       if (stripeCustomerIdForLink) upsertPayload.stripe_customer_id = stripeCustomerIdForLink;
       if (currentPlan) upsertPayload.current_plan = currentPlan;
-      upsertPayload.is_trialing = is_trialing;
       // 紐付け対象のサブスクリプションIDがあれば保存
       try {
         const chosenSubId: string | undefined = (customers?.data ?? [])
@@ -433,7 +442,9 @@ export async function GET(req: NextRequest) {
       const basePriceId = (purchasedItems.find((it) => it.type === "base")?.price_id || undefined) as string | undefined;
       const addonPriceId =
         getAddonPriceIdForBasePriceId(basePriceId, { interval: (primaryInterval as any) }) ||
-        (currentPlan ? getAddonPriceIdForPlan(currentPlan, (primaryInterval as any)) : undefined);
+        ((currentPlan === "lite" || currentPlan === "business")
+          ? getAddonPriceIdForPlan(currentPlan, (primaryInterval as any))
+          : undefined);
       if (addonPriceId) {
         const price = await stripe.prices.retrieve(addonPriceId);
         unit_amount = (price as any)?.unit_amount ?? undefined;
@@ -456,7 +467,7 @@ export async function GET(req: NextRequest) {
             currency,
             recipients,
             purchased_items: purchasedItems,
-            is_trialing: is_trialing,
+            is_trialing: Boolean(is_trialing || currentPlan === "trial"),
             billing_interval: (primaryInterval as any) || null,
             debug,
           }
@@ -468,7 +479,7 @@ export async function GET(req: NextRequest) {
             currency,
             recipients,
             purchased_items: purchasedItems,
-            is_trialing: is_trialing,
+            is_trialing: Boolean(is_trialing || currentPlan === "trial"),
             billing_interval: (primaryInterval as any) || null,
           }
     );

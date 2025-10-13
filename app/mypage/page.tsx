@@ -32,7 +32,7 @@ import {
 const MAX_ADDITIONAL_RECIPIENTS = 10;
 const SESSION_EMAIL_KEY = "mypage:lastEmail:session";
 
-type Plan = "lite" | "business" | null;
+type Plan = "lite" | "business" | "trial" | null;
 
 type RecipientInfo = {
   email: string;
@@ -451,6 +451,8 @@ export default function MyPage() {
     </div>
   );
 }
+
+// (UIゲートは取り消し)
 
 type AuthGateProps = {
   stage: null | "login" | "register" | "emailSent";

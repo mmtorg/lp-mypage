@@ -204,6 +204,8 @@ export async function POST(req: NextRequest) {
                       });
                     } catch {}
                     await stripe.subscriptions.cancel(subId);
+                    // Optional cleanup: delete orphan customer if no active/trialing subs left
+                    
                   }
                 }
               } catch (e) {
@@ -603,6 +605,19 @@ export async function POST(req: NextRequest) {
           console.warn("Failed to infer plan type", e);
         }
 
+        // Fallbacks for trial products: allow STRIPE_TRIAL_PRODUCT_IDS or metadata.plan
+        try {
+          if (!planType) {
+            const trialLike = await isTrialSubscription(sub);
+            if (trialLike) planType = "trial";
+          }
+        } catch {}
+        if (!planType) {
+          const m = (sub as any)?.metadata;
+          const mp = typeof m?.plan === "string" ? m.plan.toLowerCase() : null;
+          if (mp === "trial") planType = "trial";
+        }
+
         // Enforce: one-time free trial per email/customer
         try {
           const isTrialProduct = await isTrialSubscription(sub);
@@ -629,6 +644,7 @@ export async function POST(req: NextRequest) {
               } catch {}
               await stripe.subscriptions.cancel(sub.id);
               // After cancel, continue to clean-up paths below as needed (no throw)
+              
             }
           }
         } catch (e) {
@@ -661,7 +677,6 @@ export async function POST(req: NextRequest) {
                 email: ownerEmail,
                 stripe_customer_id: customerId,
                 current_plan: planType,
-                is_trialing: is_trialing,
                 updated_at: nowIso,
               })
               .eq("id", bySub.data.id)
@@ -690,7 +705,6 @@ export async function POST(req: NextRequest) {
                   stripe_customer_id: customerId,
                   stripe_subscription_id: sub.id,
                   current_plan: planType,
-                  is_trialing: is_trialing,
                   updated_at: nowIso,
                 })
                 .select("id")
@@ -708,7 +722,6 @@ export async function POST(req: NextRequest) {
                 .update({
                   email: ownerEmail,
                   current_plan: planType,
-                  is_trialing: is_trialing,
                   updated_at: nowIso,
                 })
                 .eq("id", byCust.data.id)
@@ -724,7 +737,6 @@ export async function POST(req: NextRequest) {
                 stripe_customer_id: customerId,
                 stripe_subscription_id: sub.id,
                 current_plan: planType,
-                is_trialing: is_trialing,
                 updated_at: nowIso,
               })
               .select("id")
@@ -813,7 +825,7 @@ export async function POST(req: NextRequest) {
         console.log(`Unhandled event: ${event.type}`);
     }
 
-    return NextResponse.json({ received: true });
+  return NextResponse.json({ received: true });
   } catch (err: any) {
     console.error("Webhook handler error:", err);
     return new NextResponse("Server error", { status: 500 });
@@ -893,12 +905,14 @@ async function hasPriorTrialForCustomerOrEmail(
   // 2) Optional: scan other customers by the same email (lifetime constraint per email)
   try {
     if (email) {
-      const found = await stripe.customers.search({
-        // Match exact email; exclude the same customer when known
-        query: customerId ? `email:"${email}" AND -id:"${customerId}"` : `email:"${email}"`,
+      // Avoid unsupported -id filter on new API versions; filter in app
+      const found = await (stripe.customers as any).search?.({
+        query: `email:"${email}"`,
         limit: 20,
       });
-      for (const c of found.data) {
+      const list = found && Array.isArray(found.data) ? found.data : [];
+      for (const c of list) {
+        if (customerId && c.id === customerId) continue;
         const subs = await stripe.subscriptions.list({ customer: c.id, status: "all", limit: 100 });
         for (const s of subs.data) {
           const trial = await isTrialSubscription(s as any);

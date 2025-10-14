@@ -18,11 +18,14 @@ type PurchasedItem = {
 type RecipientInfo = {
   email: string;
   created_via: "initial" | "addon" | null;
-  is_owner: boolean;
   pending_removal: boolean;
 };
 
-function inferItemType(product: any): "base" | "addon" {
+function inferItemType(price: any, product: any): "base" | "addon" {
+  const priceType = String((price as any)?.metadata?.type ?? "")
+    .toString()
+    .toLowerCase();
+  if (["addon", "add_on", "add-on", "add"].includes(priceType)) return "addon";
   const rawType = ((product as any)?.metadata?.type ?? (product as any)?.metadata?.category ?? "")
     .toString()
     .toLowerCase();
@@ -92,7 +95,7 @@ async function collectSubscriptionItems(
               if (suffix) formattedName = `${formattedName}${suffix}`;
             } catch {}
 
-            const itemType = inferItemType(product);
+            const itemType = inferItemType(price, product);
             if (itemType === "base" && !primaryPrice && price.unit_amount) {
               primaryPrice = { unit_amount: price.unit_amount, currency: price.currency };
             }
@@ -122,6 +125,7 @@ function envList(name: string): string[] {
 const LITE_PRICE_IDS = getLitePriceIds();
 const BUSINESS_PRICE_IDS = getBusinessPriceIds();
 const TRIAL_PRODUCT_IDS = new Set(envList("STRIPE_TRIAL_PRODUCT_IDS"));
+const TRIAL_PRICE_IDS = new Set(envList("STRIPE_TRIAL_PRICE_IDS"));
 const VALID_STATUSES = new Set(
   envList("SUBSCRIPTION_VALID_STATUSES").map((s) => s.toLowerCase())
 );
@@ -352,9 +356,16 @@ export async function GET(req: NextRequest) {
           if (inferred === "lite") hasLite = true;
           const described = await collectSubscriptionItems(sub);
           purchasedItems.push(...described.items);
-          if (!hasTrial && TRIAL_PRODUCT_IDS.size > 0) {
-            if (described.items.some((it) => it.product_id && TRIAL_PRODUCT_IDS.has(it.product_id))) {
-              hasTrial = true;
+          if (!hasTrial) {
+            if (TRIAL_PRICE_IDS.size > 0) {
+              if (described.items.some((it) => it.price_id && TRIAL_PRICE_IDS.has(it.price_id))) {
+                hasTrial = true;
+              }
+            }
+            if (!hasTrial && TRIAL_PRODUCT_IDS.size > 0) {
+              if (described.items.some((it) => it.product_id && TRIAL_PRODUCT_IDS.has(it.product_id))) {
+                hasTrial = true;
+              }
             }
           }
           if (!primaryCaptured && described.primaryName) {
@@ -423,7 +434,7 @@ export async function GET(req: NextRequest) {
               user_stripe_id: upsertedUserStripeId,
             },
           ],
-          { onConflict: "email", ignoreDuplicates: true }
+          { onConflict: "user_stripe_id,email", ignoreDuplicates: true }
         );
     }
 
@@ -501,12 +512,10 @@ async function fetchRecipients(stripeCustomerId?: string, ownerEmail?: string): 
     const mappedVia = via === "addon" || via === "initial" ? (via as "addon" | "initial") : null;
     const pendingRemoval = Boolean(pending);
     const existing = collected.get(key);
-    const isOwner = normalizedOwner ? key === normalizedOwner : false;
     if (!existing) {
       collected.set(key, {
         email,
         created_via: mappedVia,
-        is_owner: isOwner,
         pending_removal: pendingRemoval,
       });
       return;
@@ -514,7 +523,6 @@ async function fetchRecipients(stripeCustomerId?: string, ownerEmail?: string): 
     const next: RecipientInfo = {
       ...existing,
       created_via: existing.created_via ?? mappedVia ?? null,
-      is_owner: existing.is_owner || isOwner,
       pending_removal: existing.pending_removal || pendingRemoval,
     };
     collected.set(key, next);
@@ -556,10 +564,7 @@ async function fetchRecipients(stripeCustomerId?: string, ownerEmail?: string): 
     upsert(ownerEmail, "initial", false);
   }
 
-  return Array.from(collected.values()).map((entry) => ({
-    ...entry,
-    is_owner: normalizedOwner ? entry.email.toLowerCase() === normalizedOwner : entry.is_owner,
-  }));
+  return Array.from(collected.values());
 }
 
 // Simple exponential backoff retry for Stripe 429s

@@ -44,7 +44,6 @@ type UserStripeRow = {
 type RecipientPayload = {
   email: string;
   created_via: "initial" | "addon" | null;
-  is_owner: boolean;
   pending_removal: boolean;
 };
 
@@ -85,6 +84,25 @@ async function resolveOwnerContext(
       .eq("email", ownerEmail);
     if (error) throw error;
     userStripeRows = (data ?? []) as UserStripeRow[];
+    // If no rows matched by user_stripe.email, try via recipient_emails linkage
+    if (!userStripeRows.length) {
+      const { data: recs } = await supabaseAdmin
+        .from("recipient_emails")
+        .select("user_stripe_id")
+        .eq("email", ownerEmail);
+      const ids = Array.from(
+        new Set((recs ?? []).map((r: any) => r?.user_stripe_id).filter((v: any) => typeof v === "number"))
+      );
+      if (ids.length) {
+        const { data: fromLink } = await supabaseAdmin
+          .from("user_stripe")
+          .select(
+            "id, email, stripe_customer_id, stripe_subscription_id, current_plan, updated_at"
+          )
+          .in("id", ids);
+        userStripeRows = (fromLink ?? []) as UserStripeRow[];
+      }
+    }
     // 代表プラン（何れかが設定されていれば優先）
     plan =
       (userStripeRows.find((r) => r.current_plan)?.current_plan as Plan) ??
@@ -124,7 +142,6 @@ function toRecipientPayload(
           : row.created_via === "initial"
           ? "initial"
           : null,
-      is_owner: row.email.toLowerCase() === normalizedOwner,
       pending_removal: Boolean(row.pending_removal),
     }));
 }
@@ -196,11 +213,12 @@ export async function POST(req: NextRequest) {
       email,
       user_stripe_id: parent.id,
       pending_removal: false,
+      created_via: "addon" as const,
     }));
 
     const { error } = await supabaseAdmin
       .from("recipient_emails")
-      .upsert(rows, { onConflict: "email", ignoreDuplicates: true });
+      .upsert(rows, { onConflict: "user_stripe_id,email", ignoreDuplicates: true });
 
     if (error) {
       console.error("Insert recipients error:", error);
@@ -264,12 +282,7 @@ export async function PATCH(req: NextRequest) {
       );
     }
 
-    if (normalizedTo === ctx.normalizedOwner) {
-      return NextResponse.json(
-        { error: "契約者のメールアドレスには変更できません" },
-        { status: 400 }
-      );
-    }
+    // 契約者メールも含め、全レコードを変更可能とする
 
     const target = rows.find(
       (row) => (row.email ?? "").toLowerCase() === normalizedFrom
@@ -281,19 +294,7 @@ export async function PATCH(req: NextRequest) {
       );
     }
 
-    if (target.email.toLowerCase() === ctx.normalizedOwner) {
-      return NextResponse.json(
-        { error: "契約者のメールアドレスは変更できません" },
-        { status: 400 }
-      );
-    }
-
-    if ((target.created_via ?? "").toLowerCase() !== "addon") {
-      return NextResponse.json(
-        { error: "追加登録されたメールアドレスのみ変更できます" },
-        { status: 400 }
-      );
-    }
+    // created_via に依らず変更可能
 
     if (
       rows.some(
@@ -389,14 +390,6 @@ export async function DELETE(req: NextRequest) {
       );
       if (!row || typeof row.email !== "string") {
         skipped.push(targetEmail);
-        continue;
-      }
-      if (row.email.toLowerCase() === ctx.normalizedOwner) {
-        skipped.push(row.email);
-        continue;
-      }
-      if ((row.created_via ?? "").toLowerCase() !== "addon") {
-        skipped.push(row.email);
         continue;
       }
       markIds.push(row.id);

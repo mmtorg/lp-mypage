@@ -18,11 +18,14 @@ type PurchasedItem = {
 type RecipientInfo = {
   email: string;
   created_via: "initial" | "addon" | null;
-  is_owner: boolean;
   pending_removal: boolean;
 };
 
-function inferItemType(product: any): "base" | "addon" {
+function inferItemType(price: any, product: any): "base" | "addon" {
+  const priceType = String((price as any)?.metadata?.type ?? "")
+    .toString()
+    .toLowerCase();
+  if (["addon", "add_on", "add-on", "add"].includes(priceType)) return "addon";
   const rawType = ((product as any)?.metadata?.type ?? (product as any)?.metadata?.category ?? "")
     .toString()
     .toLowerCase();
@@ -92,7 +95,7 @@ async function collectSubscriptionItems(
               if (suffix) formattedName = `${formattedName}${suffix}`;
             } catch {}
 
-            const itemType = inferItemType(product);
+            const itemType = inferItemType(price, product);
             if (itemType === "base" && !primaryPrice && price.unit_amount) {
               primaryPrice = { unit_amount: price.unit_amount, currency: price.currency };
             }
@@ -122,6 +125,7 @@ function envList(name: string): string[] {
 const LITE_PRICE_IDS = getLitePriceIds();
 const BUSINESS_PRICE_IDS = getBusinessPriceIds();
 const TRIAL_PRODUCT_IDS = new Set(envList("STRIPE_TRIAL_PRODUCT_IDS"));
+const TRIAL_PRICE_IDS = new Set(envList("STRIPE_TRIAL_PRICE_IDS"));
 const VALID_STATUSES = new Set(
   envList("SUBSCRIPTION_VALID_STATUSES").map((s) => s.toLowerCase())
 );
@@ -183,13 +187,22 @@ export async function GET(req: NextRequest) {
       console.log("[sub-by-email] mappings", { LITE_PRICE_IDS, BUSINESS_PRICE_IDS });
     }
 
-    // Cache lookup in user_stripe
+    // Cache lookup in user_stripe（同一emailで複数行の可能性に対応: lite/business > trial）
     try {
-      const { data: cached } = await supabaseAdmin
+      const { data: cachedRows } = await supabaseAdmin
         .from("user_stripe")
         .select("current_plan, email, updated_at, stripe_customer_id")
-        .eq("email", email)
-        .maybeSingle();
+        .eq("email", email);
+      const rank = (p: string | null | undefined) => (p === "business" ? 3 : p === "lite" ? 2 : p === "trial" ? 1 : 0);
+      const cached = (cachedRows ?? [])
+        .slice()
+        .sort((a: any, b: any) => {
+          const r = rank(b.current_plan) - rank(a.current_plan);
+          if (r !== 0) return r;
+          const ta = a.updated_at ? new Date(a.updated_at).getTime() : 0;
+          const tb = b.updated_at ? new Date(b.updated_at).getTime() : 0;
+          return tb - ta;
+        })[0];
       if (debugMode) debug.cached = cached ?? null;
 
       if (!force && cached?.current_plan) {
@@ -228,15 +241,16 @@ export async function GET(req: NextRequest) {
         } catch (err) {
           console.warn("[sub-by-email] failed to fetch recipients (cache)", err);
         }
+        const finalPlan: Plan = (cached.current_plan as Plan) ?? null;
         return NextResponse.json({
-          current_plan: cached.current_plan as Plan,
+          current_plan: finalPlan,
           email,
           product_name: productName,
           unit_amount,
           currency,
           recipients,
           purchased_items: purchasedItems,
-          is_trialing: (cached.current_plan as any) === "trial",
+          is_trialing: finalPlan === "trial",
         });
       }
 
@@ -278,15 +292,16 @@ export async function GET(req: NextRequest) {
           } catch (err) {
             console.warn("[sub-by-email] failed to fetch recipients (cache)", err);
           }
+          const finalPlan: Plan = (cached.current_plan as Plan) ?? null;
           return NextResponse.json({
-            current_plan: cached.current_plan as Plan,
+            current_plan: finalPlan,
             email,
             product_name: productName,
             unit_amount,
             currency,
             recipients,
             purchased_items: purchasedItems,
-            is_trialing: (cached.current_plan as any) === "trial",
+            is_trialing: finalPlan === "trial",
           });
         } else if (debugMode) {
           console.log("[sub-by-email] bypass cache (stale or null)", { ageMs, cachedPlan: cached.current_plan });
@@ -352,9 +367,16 @@ export async function GET(req: NextRequest) {
           if (inferred === "lite") hasLite = true;
           const described = await collectSubscriptionItems(sub);
           purchasedItems.push(...described.items);
-          if (!hasTrial && TRIAL_PRODUCT_IDS.size > 0) {
-            if (described.items.some((it) => it.product_id && TRIAL_PRODUCT_IDS.has(it.product_id))) {
-              hasTrial = true;
+          if (!hasTrial) {
+            if (TRIAL_PRICE_IDS.size > 0) {
+              if (described.items.some((it) => it.price_id && TRIAL_PRICE_IDS.has(it.price_id))) {
+                hasTrial = true;
+              }
+            }
+            if (!hasTrial && TRIAL_PRODUCT_IDS.size > 0) {
+              if (described.items.some((it) => it.product_id && TRIAL_PRODUCT_IDS.has(it.product_id))) {
+                hasTrial = true;
+              }
             }
           }
           if (!primaryCaptured && described.primaryName) {
@@ -377,7 +399,7 @@ export async function GET(req: NextRequest) {
 
     // Upsert user_stripe (no Supabase Auth) and ensure owner recipient
     let upsertedUserStripeId: number | undefined;
-    if (stripeCustomerIdForLink || currentPlan) {
+    if (false && (stripeCustomerIdForLink || currentPlan)) {
       const upsertPayload: Record<string, any> = {
         email,
         updated_at: new Date().toISOString(),
@@ -412,7 +434,7 @@ export async function GET(req: NextRequest) {
       if (!upErr) upsertedUserStripeId = upserted?.id as number | undefined;
     }
 
-    if (currentPlan && upsertedUserStripeId) {
+    if (false && currentPlan && upsertedUserStripeId) {
       await supabaseAdmin
         .from("recipient_emails")
         .upsert(
@@ -423,7 +445,7 @@ export async function GET(req: NextRequest) {
               user_stripe_id: upsertedUserStripeId,
             },
           ],
-          { onConflict: "email", ignoreDuplicates: true }
+          { onConflict: "user_stripe_id,email", ignoreDuplicates: true }
         );
     }
 
@@ -457,29 +479,32 @@ export async function GET(req: NextRequest) {
       debug.valid_statuses = Array.from(VALID_STATUSES.values());
       debug.purchased_items = purchasedItems;
     }
+    // scheduled の概念を廃止。finalPlan は currentPlan を採用
+    const finalPlan: Plan = currentPlan as Plan;
+
     return NextResponse.json(
       debugMode
         ? {
-            current_plan: currentPlan,
+            current_plan: finalPlan,
             email,
             product_name: productName,
             unit_amount,
             currency,
             recipients,
             purchased_items: purchasedItems,
-            is_trialing: Boolean(is_trialing || currentPlan === "trial"),
+            is_trialing: finalPlan === "trial",
             billing_interval: (primaryInterval as any) || null,
             debug,
           }
         : {
-            current_plan: currentPlan,
+            current_plan: finalPlan,
             email,
             product_name: productName,
             unit_amount,
             currency,
             recipients,
             purchased_items: purchasedItems,
-            is_trialing: Boolean(is_trialing || currentPlan === "trial"),
+            is_trialing: finalPlan === "trial",
             billing_interval: (primaryInterval as any) || null,
           }
     );
@@ -501,12 +526,10 @@ async function fetchRecipients(stripeCustomerId?: string, ownerEmail?: string): 
     const mappedVia = via === "addon" || via === "initial" ? (via as "addon" | "initial") : null;
     const pendingRemoval = Boolean(pending);
     const existing = collected.get(key);
-    const isOwner = normalizedOwner ? key === normalizedOwner : false;
     if (!existing) {
       collected.set(key, {
         email,
         created_via: mappedVia,
-        is_owner: isOwner,
         pending_removal: pendingRemoval,
       });
       return;
@@ -514,7 +537,6 @@ async function fetchRecipients(stripeCustomerId?: string, ownerEmail?: string): 
     const next: RecipientInfo = {
       ...existing,
       created_via: existing.created_via ?? mappedVia ?? null,
-      is_owner: existing.is_owner || isOwner,
       pending_removal: existing.pending_removal || pendingRemoval,
     };
     collected.set(key, next);
@@ -556,10 +578,7 @@ async function fetchRecipients(stripeCustomerId?: string, ownerEmail?: string): 
     upsert(ownerEmail, "initial", false);
   }
 
-  return Array.from(collected.values()).map((entry) => ({
-    ...entry,
-    is_owner: normalizedOwner ? entry.email.toLowerCase() === normalizedOwner : entry.is_owner,
-  }));
+  return Array.from(collected.values());
 }
 
 // Simple exponential backoff retry for Stripe 429s

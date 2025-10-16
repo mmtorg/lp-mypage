@@ -379,7 +379,7 @@ export async function POST(req: NextRequest) {
       // Do not overwrite existing recipient rows; only insert if not exists
       const { error } = await supabaseAdmin
         .from("recipient_emails")
-        .upsert(rows, { onConflict: "email", ignoreDuplicates: true });
+        .upsert(rows, { onConflict: "user_stripe_id,email", ignoreDuplicates: true });
       if (error) console.error("[checkout] upsertRecipients error", error);
     }
 

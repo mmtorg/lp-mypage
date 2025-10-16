@@ -28,22 +28,31 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "email is required" }, { status: 400 });
     }
 
-    // 同一メールで複数サブスクリプションがあり得るため、更新日時が新しいものを優先
-    const { data, error } = await supabaseAdmin
+    // 同一メールで trial と lite/business が併存する可能性があるため、lite/business を優先
+    const { data: rows, error } = await supabaseAdmin
       .from("user_stripe")
-      .select("current_plan, email")
-      .eq("email", effectiveEmail)
-      .order("updated_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+      .select("current_plan, email, updated_at")
+      .eq("email", effectiveEmail);
 
     if (error) {
       console.warn("/api/me/subscription query error", error);
     }
 
+    const items = (rows ?? []) as Array<{ current_plan: "lite" | "business" | "trial" | null; email: string | null; updated_at?: string }>;
+    const rank = (p: string | null | undefined) => (p === "business" ? 3 : p === "lite" ? 2 : p === "trial" ? 1 : 0);
+    const prioritized = items
+      .slice()
+      .sort((a, b) => {
+        const r = rank(b.current_plan) - rank(a.current_plan);
+        if (r !== 0) return r;
+        const ta = a.updated_at ? new Date(a.updated_at).getTime() : 0;
+        const tb = b.updated_at ? new Date(b.updated_at).getTime() : 0;
+        return tb - ta;
+      })[0];
+
     return NextResponse.json({
-      current_plan: (data?.current_plan as "lite" | "business" | null) ?? null,
-      email: data?.email ?? effectiveEmail,
+      current_plan: (prioritized?.current_plan as any) ?? null,
+      email: prioritized?.email ?? effectiveEmail,
     });
   } catch (error) {
     console.error("Subscription API error:", error);

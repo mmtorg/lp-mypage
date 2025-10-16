@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { stripe } from "@/lib/stripe";
 
-type Plan = "lite" | "business" | null;
+type Plan = "lite" | "business" | "trial" | null;
 
 const ACTIVE_STATUSES = new Set(
   (process.env.SUBSCRIPTION_VALID_STATUSES || "active,trialing,past_due,unpaid")
@@ -40,19 +40,32 @@ export async function GET(req: NextRequest) {
     // Resolve plan and stripe_customer_id, collect parent ids
     const { data: usRows, error: usErr } = await supabaseAdmin
       .from("user_stripe")
-      .select("id, current_plan, stripe_customer_id")
+      .select("id, current_plan, stripe_customer_id, updated_at")
       .eq("email", email);
     if (usErr) {
       console.warn("[limits] user_stripe query error", usErr);
     }
 
-    const parentIds: number[] = (usRows ?? []).map((r: any) => r.id).filter((v: any) => typeof v === "number");
-    const stripeCustomerId: string | undefined = (usRows ?? []).find((r: any) => r?.stripe_customer_id)?.stripe_customer_id || undefined;
-    const plan: Plan = ((usRows ?? []).find((r: any) => r?.current_plan)?.current_plan as Plan) ?? null;
+    // 同一emailで trial と lite/business が併存する場合は lite/business を優先
+    const rows = (usRows ?? []) as Array<{ id: number; current_plan: Plan | null; stripe_customer_id?: string | null; updated_at?: string }>
+    const rank = (p: Plan | null | undefined) => (p === "business" ? 3 : p === "lite" ? 2 : p === "trial" ? 1 : 0);
+    const prioritized = rows
+      .slice()
+      .sort((a, b) => {
+        const r = rank(b.current_plan) - rank(a.current_plan);
+        if (r !== 0) return r;
+        // 同順位は updated_at の新しい方を優先（念のため）
+        const ta = a.updated_at ? new Date(a.updated_at).getTime() : 0;
+        const tb = b.updated_at ? new Date(b.updated_at).getTime() : 0;
+        return tb - ta;
+      })[0];
+    const plan: Plan = (prioritized?.current_plan as Plan) ?? null;
+    const stripeCustomerId: string | undefined = prioritized?.stripe_customer_id || undefined;
+    const parentIds: number[] = prioritized?.id ? [prioritized.id] : [];
 
     // Base slots from plan_limits; fallback defaults (lite=1, business=4)
     let baseSlots = 0;
-    if (plan) {
+    if (plan === "lite" || plan === "business") {
       try {
         const { data: lim } = await supabaseAdmin
           .from("plan_limits")
@@ -117,4 +130,3 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "failed" }, { status: 500 });
   }
 }
-

@@ -30,7 +30,7 @@ export const UI_TEXTS = {
   BUSINESS_MONTHLY_BUTTON: "Business（月額）に申し込む",
   BUSINESS_YEARLY_BUTTON: "Business（年額）に申し込む",
   ADD_SEATS_BUTTON: "配信先を追加（人数を指定）",
-  PORTAL_BUTTON: "請求情報の確認・解約へ進む",
+  PORTAL_BUTTON: "管理画面を開く",
 
   // 注意事項
   SEATS_NOTICE:

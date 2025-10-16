@@ -76,7 +76,7 @@ export function PortalButton({ email }: PortalButtonProps) {
             Loading...
           </>
         ) : (
-          "請求情報の確認・解約へ進む"
+          "管理画面を開く"
         )}
       </Button>
     </div>

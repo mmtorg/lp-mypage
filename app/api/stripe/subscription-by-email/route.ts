@@ -187,13 +187,22 @@ export async function GET(req: NextRequest) {
       console.log("[sub-by-email] mappings", { LITE_PRICE_IDS, BUSINESS_PRICE_IDS });
     }
 
-    // Cache lookup in user_stripe
+    // Cache lookup in user_stripe（同一emailで複数行の可能性に対応: lite/business > trial）
     try {
-      const { data: cached } = await supabaseAdmin
+      const { data: cachedRows } = await supabaseAdmin
         .from("user_stripe")
         .select("current_plan, email, updated_at, stripe_customer_id")
-        .eq("email", email)
-        .maybeSingle();
+        .eq("email", email);
+      const rank = (p: string | null | undefined) => (p === "business" ? 3 : p === "lite" ? 2 : p === "trial" ? 1 : 0);
+      const cached = (cachedRows ?? [])
+        .slice()
+        .sort((a: any, b: any) => {
+          const r = rank(b.current_plan) - rank(a.current_plan);
+          if (r !== 0) return r;
+          const ta = a.updated_at ? new Date(a.updated_at).getTime() : 0;
+          const tb = b.updated_at ? new Date(b.updated_at).getTime() : 0;
+          return tb - ta;
+        })[0];
       if (debugMode) debug.cached = cached ?? null;
 
       if (!force && cached?.current_plan) {
@@ -232,15 +241,16 @@ export async function GET(req: NextRequest) {
         } catch (err) {
           console.warn("[sub-by-email] failed to fetch recipients (cache)", err);
         }
+        const finalPlan: Plan = (cached.current_plan as Plan) ?? null;
         return NextResponse.json({
-          current_plan: cached.current_plan as Plan,
+          current_plan: finalPlan,
           email,
           product_name: productName,
           unit_amount,
           currency,
           recipients,
           purchased_items: purchasedItems,
-          is_trialing: (cached.current_plan as any) === "trial",
+          is_trialing: finalPlan === "trial",
         });
       }
 
@@ -282,15 +292,16 @@ export async function GET(req: NextRequest) {
           } catch (err) {
             console.warn("[sub-by-email] failed to fetch recipients (cache)", err);
           }
+          const finalPlan: Plan = (cached.current_plan as Plan) ?? null;
           return NextResponse.json({
-            current_plan: cached.current_plan as Plan,
+            current_plan: finalPlan,
             email,
             product_name: productName,
             unit_amount,
             currency,
             recipients,
             purchased_items: purchasedItems,
-            is_trialing: (cached.current_plan as any) === "trial",
+            is_trialing: finalPlan === "trial",
           });
         } else if (debugMode) {
           console.log("[sub-by-email] bypass cache (stale or null)", { ageMs, cachedPlan: cached.current_plan });
@@ -388,7 +399,7 @@ export async function GET(req: NextRequest) {
 
     // Upsert user_stripe (no Supabase Auth) and ensure owner recipient
     let upsertedUserStripeId: number | undefined;
-    if (stripeCustomerIdForLink || currentPlan) {
+    if (false && (stripeCustomerIdForLink || currentPlan)) {
       const upsertPayload: Record<string, any> = {
         email,
         updated_at: new Date().toISOString(),
@@ -423,7 +434,7 @@ export async function GET(req: NextRequest) {
       if (!upErr) upsertedUserStripeId = upserted?.id as number | undefined;
     }
 
-    if (currentPlan && upsertedUserStripeId) {
+    if (false && currentPlan && upsertedUserStripeId) {
       await supabaseAdmin
         .from("recipient_emails")
         .upsert(
@@ -468,29 +479,32 @@ export async function GET(req: NextRequest) {
       debug.valid_statuses = Array.from(VALID_STATUSES.values());
       debug.purchased_items = purchasedItems;
     }
+    // scheduled の概念を廃止。finalPlan は currentPlan を採用
+    const finalPlan: Plan = currentPlan as Plan;
+
     return NextResponse.json(
       debugMode
         ? {
-            current_plan: currentPlan,
+            current_plan: finalPlan,
             email,
             product_name: productName,
             unit_amount,
             currency,
             recipients,
             purchased_items: purchasedItems,
-            is_trialing: Boolean(is_trialing || currentPlan === "trial"),
+            is_trialing: finalPlan === "trial",
             billing_interval: (primaryInterval as any) || null,
             debug,
           }
         : {
-            current_plan: currentPlan,
+            current_plan: finalPlan,
             email,
             product_name: productName,
             unit_amount,
             currency,
             recipients,
             purchased_items: purchasedItems,
-            is_trialing: Boolean(is_trialing || currentPlan === "trial"),
+            is_trialing: finalPlan === "trial",
             billing_interval: (primaryInterval as any) || null,
           }
     );

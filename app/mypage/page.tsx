@@ -73,6 +73,27 @@ export default function MyPage() {
   const [password2, setPassword2] = useState("");
   const [authError, setAuthError] = useState<string | null>(null);
   const [isAuthed, setIsAuthed] = useState(false);
+  // 枠情報（ベース/追加/使用/残り）
+  const [recipLimits, setRecipLimits] = useState<{
+    plan: Plan;
+    base_slots: number;
+    addon_slots: number;
+    used_slots: number;
+    remaining_slots: number;
+  } | null>(null);
+
+  const loadLimits = async (targetEmail: string) => {
+    try {
+      const res = await fetch(
+        `/api/me/limits?email=${encodeURIComponent(targetEmail)}`
+      );
+      if (!res.ok) throw new Error("limits fetch failed");
+      const data = await res.json();
+      setRecipLimits(data);
+    } catch {
+      setRecipLimits(null);
+    }
+  };
 
   const refreshByEmail = async (targetEmail?: string) => {
     const e = (targetEmail ?? email).trim();
@@ -88,6 +109,12 @@ export default function MyPage() {
       const data = (await res.json()) as SubscriptionData;
       setSub(data);
       setError(null);
+      // 枠情報の取得（lite/business のみ）
+      if (data.current_plan === "lite" || data.current_plan === "business") {
+        loadLimits(e);
+      } else {
+        setRecipLimits(null);
+      }
 
       // 認証チェック
       try {
@@ -206,7 +233,7 @@ export default function MyPage() {
         <div className="mb-8 text-center">
           <h1 className="mb-2 text-3xl font-bold text-gray-900">マイページ</h1>
           <p className="text-gray-600">
-            メールアドレスから現在の購読状況を確認します。
+            現在のサブスクリプションを確認できます
           </p>
         </div>
 
@@ -301,6 +328,7 @@ export default function MyPage() {
               setSub(null);
               setPassword("");
             }}
+            recipLimits={recipLimits}
           />
         )}
 
@@ -699,6 +727,13 @@ type ResolvedViewProps = {
   onLogout: () => void | Promise<void>;
   onRefetch?: (targetEmail?: string) => void | Promise<void>;
   isTrialing?: boolean;
+  recipLimits?: {
+    plan: Plan;
+    base_slots: number;
+    addon_slots: number;
+    used_slots: number;
+    remaining_slots: number;
+  } | null;
 };
 
 function ResolvedView({
@@ -713,6 +748,7 @@ function ResolvedView({
   onLogout,
   onRefetch,
   isTrialing,
+  recipLimits,
 }: ResolvedViewProps) {
   const { toast } = useToast();
   const [recipientList, setRecipientList] = useState<RecipientInfo[]>(
@@ -763,7 +799,7 @@ function ResolvedView({
 
     const normalizedOwner = email.trim().toLowerCase();
     const rank = (r: RecipientInfo) => {
-      if (r.email.toLowerCase() === normalizedOwner) return 0; // オーナー
+      if (r.email.toLowerCase() === normalizedOwner) return 0; // 契約者
       const via = (r.created_via ?? "").toLowerCase();
       if (via === "addon") return 2; // 追加購入受信者
       return 1; // 初期受信者
@@ -782,8 +818,33 @@ function ResolvedView({
     [sortedRecipients]
   );
 
-  const displayItems = currentItems.length
-    ? currentItems
+  const isTrialLike = (name?: string) => {
+    if (!name) return false;
+    const s = name.toLowerCase();
+    // 製品名に trial / トライアル / 無料トライアル が含まれるものをトライアル扱い
+    return (
+      s.includes("trial") ||
+      s.includes("トライアル") ||
+      s.includes("無料トライアル")
+    );
+  };
+
+  let items = currentItems;
+
+  // 有料プランが確定している時は “トライアルっぽいアイテム” を除外
+  if ((plan === "lite" || plan === "business") && items.length) {
+    const filtered = items.filter((i) => !isTrialLike(i.name));
+    if (filtered.length) {
+      items = filtered;
+    }
+  }
+
+  const displayItems = items.length
+    ? items
+    : currentProductName &&
+      !(plan === "lite" || plan === "business") &&
+      isTrialLike(currentProductName)
+    ? [] // 有料時にトライアル名だけが来ても出さない
     : currentProductName
     ? [{ name: currentProductName, quantity: 1, type: "base" as const }]
     : [];
@@ -826,14 +887,11 @@ function ResolvedView({
           </section>
           <section className="space-y-4">
             <h3 className="border-b border-gray-200 pb-2 text-xl font-semibold text-gray-900">
-              請求と管理
+              サブスクリプションの管理
             </h3>
             <div className="space-y-2 rounded-md bg-gray-50 p-4 text-sm text-gray-600">
               <ul className="list-disc pl-5 space-y-1">
-                <li>
-                  請求の確認や支払い方法の変更は「カスタマーポータル」から行えます。必要に応じて
-                  Portal を開いてください。
-                </li>
+                <li>無料トライアルの解約は管理画面から行えます。</li>
               </ul>
             </div>
             <PortalButton email={email} />
@@ -898,8 +956,17 @@ function ResolvedView({
       <CardContent className="space-y-12">
         <section className="space-y-4">
           <h3 className="border-b border-gray-200 pb-2 text-xl font-semibold text-gray-900">
-            受信者（メール配信先）
+            メール配信先
           </h3>
+          {recipLimits && (
+            <div className="rounded-md bg-gray-50 p-3 text-sm text-gray-700">
+              残り無料枠:{" "}
+              {Math.max(0, Number(recipLimits.remaining_slots || 0))}
+              <span className="ml-3 text-gray-500">
+                （ 追加購入: {Number(recipLimits.addon_slots || 0)}）
+              </span>
+            </div>
+          )}
         </section>
 
         {sortedRecipients.length > 0 ? (
@@ -916,12 +983,14 @@ function ResolvedView({
                   ) : null}
                 </span>
                 <div className="flex items-center gap-2">
-                  {recipient.email.toLowerCase() === email.trim().toLowerCase() && (
+                  {recipient.email.toLowerCase() ===
+                    email.trim().toLowerCase() && (
                     <span className="inline-flex items-center rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700 ring-1 ring-inset ring-blue-200">
-                      オーナー
+                      契約者
                     </span>
                   )}
-                  {recipient.email.toLowerCase() !== email.trim().toLowerCase() &&
+                  {recipient.email.toLowerCase() !==
+                    email.trim().toLowerCase() &&
                     (recipient.created_via ?? "").toLowerCase() === "addon" && (
                       <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-600 ring-1 ring-inset ring-gray-200">
                         追加購入
@@ -939,7 +1008,7 @@ function ResolvedView({
 
         <section className="space-y-4">
           <h3 className="border-b border-gray-200 pb-2 text-xl font-semibold text-gray-900">
-            受信者の管理
+            配信先の管理
           </h3>
           <div className="grid gap-2 sm:grid-cols-3">
             <AddRecipientsModal
@@ -949,16 +1018,21 @@ function ResolvedView({
               currency={currentCurrency}
               billingInterval={currentBillingInterval}
               existingRecipients={sortedRecipients}
+              remainingSlots={recipLimits?.remaining_slots}
               onRefetch={() => onRefetch?.(email)}
             />
             <EditRecipientModal
               ownerEmail={email}
-              addonRecipients={editableRecipients}
+              addonRecipients={editableRecipients.filter(
+                (r) => r.email.toLowerCase() !== email.trim().toLowerCase()
+              )}
               onSuccess={setRecipientList}
             />
             <DeleteRecipientsModal
               ownerEmail={email}
-              addonRecipients={editableRecipients}
+              addonRecipients={editableRecipients.filter(
+                (r) => r.email.toLowerCase() !== email.trim().toLowerCase()
+              )}
               onSuccess={setRecipientList}
             />
           </div>
@@ -966,13 +1040,22 @@ function ResolvedView({
 
         <section className="space-y-4">
           <h3 className="border-b border-gray-200 pb-2 text-xl font-semibold text-gray-900">
-            請求と管理
+            サブスクリプションの管理
           </h3>
           <div className="space-y-2 rounded-md bg-gray-50 p-4 text-sm text-gray-600">
             <ul className="list-disc pl-5 space-y-1">
               <li>
-                請求情報の確認／支払い方法の更新はカスタマーポータルから行えます。
+                サブスクリプションの解約
+                <ul className="list-none">
+                  <li>
+                    プラン変更をご希望の場合は、一度現在のサブスクリプションを解約し、
+                    新しいプランを購入してください。
+                  </li>
+                </ul>
               </li>
+              <li>請求書・領収書ダウンロード</li>
+              <li>請求履歴の確認</li>
+              <li>請求先情報の確認・更新</li>
             </ul>
           </div>
           <PortalButton email={email} />
@@ -991,6 +1074,7 @@ type AddRecipientsModalProps = {
   currency?: string;
   billingInterval?: "month" | "year";
   existingRecipients: RecipientInfo[];
+  remainingSlots?: number;
   onRefetch?: () => void | Promise<void>;
 };
 
@@ -1001,6 +1085,7 @@ function AddRecipientsModal({
   currency,
   billingInterval,
   existingRecipients,
+  remainingSlots,
   onRefetch,
 }: AddRecipientsModalProps) {
   const [open, setOpen] = useState(false);
@@ -1020,11 +1105,18 @@ function AddRecipientsModal({
   const [prechecking, setPrechecking] = useState(false);
   const [awaitingCheckoutRedirect, setAwaitingCheckoutRedirect] =
     useState(false);
+  // 無料/有料の分割用
+  const [freeCountPlanned, setFreeCountPlanned] = useState(0);
+  const [payableCountPlanned, setPayableCountPlanned] = useState(0);
+  const [freeEmailsPlanned, setFreeEmailsPlanned] = useState<string[]>([]);
+  const [paidEmailsPlanned, setPaidEmailsPlanned] = useState<string[]>([]);
 
   const isFirstTimeAddonPurchase = useMemo(
     () =>
       existingRecipients.filter(
-        (r) => r.email.toLowerCase() !== email.toLowerCase() && (r.created_via ?? "").toLowerCase() === "addon"
+        (r) =>
+          r.email.toLowerCase() !== email.toLowerCase() &&
+          (r.created_via ?? "").toLowerCase() === "addon"
       ).length === 0,
     [existingRecipients, email]
   );
@@ -1098,6 +1190,35 @@ function AddRecipientsModal({
     !saving &&
     !prechecking;
 
+  // 入力欄を増減（count は emails.length に自動追従）
+  const addEmailRow = () =>
+    setEmails((prev) =>
+      prev.length >= MAX_ADDITIONAL_RECIPIENTS ? prev : [...prev, ""]
+    );
+  const removeEmailRow = () =>
+    setEmails((prev) => (prev.length > 1 ? prev.slice(0, -1) : prev));
+
+  // emails の行数に合わせて count / countInput を同期
+  useEffect(() => {
+    const n = emails.length;
+    setCount(n);
+    setCountInput(String(n));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [emails.length]);
+
+  // いまの入力数が無料枠で収まるか（= 料金表示を消す条件）
+  const remainingNow =
+    typeof remainingSlots === "number"
+      ? Math.max(0, Number(remainingSlots || 0))
+      : 0;
+  const isAllFree = typeof remainingSlots === "number" && count <= remainingNow;
+
+  // 指定行を削除（最低1行は残す）
+  const removeEmailAt = (idx: number) =>
+    setEmails((prev) =>
+      prev.length <= 1 ? prev : prev.filter((_, i) => i !== idx)
+    );
+
   const handleOpenConfirm = async () => {
     if (!canSubmit) return;
     setError(null);
@@ -1106,27 +1227,55 @@ function AddRecipientsModal({
 
     try {
       setPrechecking(true);
-      const payload = emails.map((v) => v.trim()).filter(Boolean);
-      const res = await fetch("/api/stripe/checkout", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          plan,
-          quantity: count,
-          ownerEmail: email,
-          additionalEmails: payload,
-          precheck: true,
-        }),
-      });
-      const data = await res.json();
+      const payloadAll = emails.map((v) => v.trim()).filter(Boolean);
 
-      if (data?.canFinalizeSilently) {
-        setAwaitingCheckoutRedirect(false);
-      } else if (data?.url) {
-        setCheckoutUrl(String(data.url));
-        setAwaitingCheckoutRedirect(true);
+      // 現在の残り枠を取得
+      const limRes = await fetch(
+        `/api/me/limits?email=${encodeURIComponent(email)}`
+      );
+      let lim: { remaining_slots?: number } | null = null;
+      try {
+        lim = await limRes.json();
+      } catch {
+        lim = null;
+      }
+      const remaining = Number(lim?.remaining_slots ?? 0);
+
+      const freeCount = Math.max(0, Math.min(remaining, payloadAll.length));
+      const payable = Math.max(0, payloadAll.length - freeCount);
+
+      const freeEmails = payloadAll.slice(0, freeCount);
+      const paidEmails = payloadAll.slice(freeCount);
+      setFreeCountPlanned(freeCount);
+      setPayableCountPlanned(payable);
+      setFreeEmailsPlanned(freeEmails);
+      setPaidEmailsPlanned(paidEmails);
+
+      if (payable > 0) {
+        // 有料分のみ precheck（必要ならCheckout遷移）
+        const res = await fetch("/api/stripe/checkout", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            plan,
+            quantity: payable,
+            ownerEmail: email,
+            additionalEmails: paidEmails,
+            precheck: true,
+          }),
+        });
+        const data = await res.json();
+        if (data?.canFinalizeSilently) {
+          setAwaitingCheckoutRedirect(false);
+        } else if (data?.url) {
+          setCheckoutUrl(String(data.url));
+          setAwaitingCheckoutRedirect(true);
+        } else {
+          throw new Error(data?.error || "事前チェックに失敗しました。");
+        }
       } else {
-        throw new Error(data?.error || "事前チェックに失敗しました。");
+        // 全て無料枠内：Checkoutは不要
+        setAwaitingCheckoutRedirect(false);
       }
 
       setSuspendReset(true);
@@ -1143,34 +1292,57 @@ function AddRecipientsModal({
     setSaving(true);
     setError(null);
     try {
-      const payload = emails.map((v) => v.trim()).filter(Boolean);
-      const res = await fetch("/api/stripe/checkout", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          plan,
-          quantity: count,
-          ownerEmail: email,
-          additionalEmails: payload,
-        }),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        throw new Error(data?.error || "Checkout の実行に失敗しました。");
+      // 1) 無料枠分を先に確定
+      if (freeCountPlanned > 0 && freeEmailsPlanned.length > 0) {
+        const freeRes = await fetch("/api/recipients/free-add", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ownerEmail: email,
+            emails: freeEmailsPlanned,
+          }),
+        });
+        if (!freeRes.ok) {
+          const data = await freeRes.json().catch(() => null);
+          throw new Error(data?.error || "無料枠の追加に失敗しました。");
+        }
       }
-      const data = await res.json();
-      if (data?.updated && data?.portalUrl) {
-        const d = data as Record<string, unknown>;
-        setUpdatedProductName(String(d.productName ?? "追加受信者"));
-        setUpdatedQuantity(Number(d.newQuantity ?? count));
-        setPortalUrl(String(d.portalUrl));
-        setPostUpdateOpen(true);
-        setSuspendReset(false);
-        setOpen(false);
+
+      // 2) 有料分があればCheckout/サイレント更新
+      if (payableCountPlanned > 0) {
+        const res = await fetch("/api/stripe/checkout", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            plan,
+            quantity: payableCountPlanned,
+            ownerEmail: email,
+            additionalEmails: paidEmailsPlanned,
+          }),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => null);
+          throw new Error(data?.error || "Checkout の実行に失敗しました。");
+        }
+        const data = await res.json();
+        if (data?.updated && data?.portalUrl) {
+          const d = data as Record<string, unknown>;
+          setUpdatedProductName(String(d.productName ?? "追加受信者"));
+          setUpdatedQuantity(Number(d.newQuantity ?? payableCountPlanned));
+          setPortalUrl(String(d.portalUrl));
+          setPostUpdateOpen(true);
+          setSuspendReset(false);
+          setOpen(false);
+        } else {
+          throw new Error(
+            data?.error || "処理に失敗しました。再読み込みしてお試しください。"
+          );
+        }
       } else {
-        throw new Error(
-          data?.error || "処理に失敗しました。再読み込みしてお試しください。"
-        );
+        // 全て無料で完了
+        try {
+          window.location.reload();
+        } catch {}
       }
     } catch (err) {
       setError(
@@ -1204,70 +1376,75 @@ function AddRecipientsModal({
             </DialogDescription>
           </DialogHeader>
 
-          {typeof unitAmount !== "undefined" && (
+          {typeof unitAmount !== "undefined" && !isAllFree && (
             <div className="rounded-md bg-gray-50 p-3 text-sm text-gray-700">
               料金（{billingInterval === "year" ? "年額" : "月額"}）：
               {formatCurrency(unitAmount, currency)} / 1メール
             </div>
           )}
 
-          <div className="space-y-2 mt-4">
-            <Label htmlFor="addon-count">
-              追加する受信者数（最大 {MAX_ADDITIONAL_RECIPIENTS}）
-            </Label>
-            <Input
-              id="addon-count"
-              type="number"
-              min={1}
-              max={MAX_ADDITIONAL_RECIPIENTS}
-              step={1}
-              value={countInput}
-              onChange={(e) => handleCountChange(e.target.value)}
-              disabled={prechecking || saving}
-              onFocus={(e) => e.currentTarget.select()}
-              onBlur={() => {
-                if (countInput === "") {
-                  setCount(1);
-                  setCountInput("1");
-                  return;
-                }
-                const n = parseInt(countInput, 10);
-                const clamped = Math.min(
-                  MAX_ADDITIONAL_RECIPIENTS,
-                  Math.max(1, Number.isNaN(n) ? 1 : n)
-                );
-                setCount(clamped);
-                if (String(clamped) !== countInput)
-                  setCountInput(String(clamped));
-              }}
-            />
-          </div>
+          <div className="px-4 sm:px-6">
+            {typeof remainingSlots === "number" && (
+              <div className="rounded-md bg-blue-50 p-3 text-sm text-blue-800 mt-2">
+                現在の残り無料枠：{Math.max(0, Number(remainingSlots || 0))}
+              </div>
+            )}
 
-          <div className="space-y-3 mt-4">
-            <Label>メールアドレス</Label>
-            {emails.map((value, index) => (
-              <Input
-                key={index}
-                type="email"
-                required
-                value={value}
-                onChange={(e) => updateEmail(index, e.target.value)}
-                placeholder={`example${index + 1}@email.com`}
-                disabled={prechecking || saving}
-              />
-            ))}
-          </div>
+            <div className="space-y-3 mt-4">
+              <Label>メールアドレス</Label>
+              {emails.map((value, index) => (
+                <div key={index} className="flex items-center gap-2">
+                  <Input
+                    type="email"
+                    required
+                    value={value}
+                    onChange={(e) => updateEmail(index, e.target.value)}
+                    placeholder={`example${index + 1}@email.com`}
+                    disabled={prechecking || saving}
+                    className="flex-1"
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => removeEmailAt(index)}
+                    disabled={prechecking || saving || emails.length <= 1}
+                    aria-label={`行${index + 1}を削除`}
+                    title="この行を削除"
+                  >
+                    ×
+                  </Button>
+                </div>
+              ))}
 
-          {(hasExistingDuplicate || hasInternalDuplicate) && (
-            <div className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-600">
-              入力されたメールに重複があります。既存・相互の重複を解消してください。
+              {/* 行の追加/削除ボタン（最大10） */}
+              <div className="flex items-center gap-2 pt-1">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={addEmailRow}
+                  disabled={
+                    prechecking ||
+                    saving ||
+                    emails.length >= MAX_ADDITIONAL_RECIPIENTS
+                  }
+                >
+                  + 追加
+                </Button>
+              </div>
             </div>
-          )}
-          {error && (
-            <div className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-600">
-              {error}
-            </div>
-          )}
+
+            {(hasExistingDuplicate || hasInternalDuplicate) && (
+              <div className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-600">
+                入力されたメールに重複があります。既存・相互の重複を解消してください。
+              </div>
+            )}
+            {error && (
+              <div className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-600">
+                {error}
+              </div>
+            )}
+          </div>
 
           <DialogFooter className="mt-6">
             <DialogClose asChild>
@@ -1308,7 +1485,17 @@ function AddRecipientsModal({
               追加内容の確認
             </DialogTitle>
             <DialogDescription className="mb-6 leading-relaxed">
-              合計金額：{formatCurrency((unitAmount || 0) * count, currency)}
+              {payableCountPlanned > 0 ? (
+                <>
+                  合計金額：
+                  {formatCurrency(
+                    (unitAmount || 0) * payableCountPlanned,
+                    currency
+                  )}
+                </>
+              ) : (
+                <>無料枠内の追加です（課金なし）</>
+              )}
               {awaitingCheckoutRedirect && (
                 <span className="mt-4 block text-sm text-muted-foreground">
                   続行するとチェックアウト画面に遷移します。
@@ -1483,6 +1670,7 @@ function EditRecipientModal({
         onSuccess(data.recipients as RecipientInfo[]);
       }
       toast({ title: "メールアドレスを変更しました" });
+
       setDone(true);
       setTimeout(() => {
         setOpen(false);
@@ -1512,49 +1700,54 @@ function EditRecipientModal({
           </DialogDescription>
         </DialogHeader>
 
-        {done && (
-          <div className="rounded-md bg-green-50 p-3 text-sm text-green-700">
-            変更が完了しました。
-          </div>
-        )}
-
-        {selectableRecipients.length === 0 ? (
-          <p className="text-sm text-gray-600">変更可能な受信者がいません。</p>
-        ) : (
-          <>
-            <div className="space-y-2 mt-4">
-              <Label htmlFor="edit-target">変更するメール</Label>
-              <select
-                id="edit-target"
-                className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                value={selectedEmail}
-                onChange={(e) => setSelectedEmail(e.target.value)}
-              >
-                {selectableRecipients.map((r) => (
-                  <option key={r.email} value={r.email}>
-                    {r.email}
-                  </option>
-                ))}
-              </select>
+        <div className="px-4 sm:px-6">
+          {done && (
+            <div className="rounded-md bg-green-50 p-3 text-sm text-green-700">
+              変更が完了しました。
             </div>
-            <div className="space-y-2 mt-4">
-              <Label htmlFor="edit-next">新しいメール</Label>
-              <Input
-                id="edit-next"
-                type="email"
-                value={nextEmail}
-                onChange={(e) => setNextEmail(e.target.value)}
-                required
-              />
-            </div>
-          </>
-        )}
+          )}
 
-        {error && (
-          <div className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-600">
-            {error}
-          </div>
-        )}
+          {selectableRecipients.length === 0 ? (
+            <p className="text-sm text-gray-600">
+              変更可能な受信者がいません。
+            </p>
+          ) : (
+            <>
+              <div className="space-y-2 mt-4">
+                <Label htmlFor="edit-target">変更するメール</Label>
+                <select
+                  id="edit-target"
+                  className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  value={selectedEmail}
+                  onChange={(e) => setSelectedEmail(e.target.value)}
+                >
+                  {selectableRecipients.map((r) => (
+                    <option key={r.email} value={r.email}>
+                      {r.email}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-2 mt-4">
+                <Label htmlFor="edit-next">新しいメール</Label>
+                <Input
+                  id="edit-next"
+                  type="email"
+                  value={nextEmail}
+                  onChange={(e) => setNextEmail(e.target.value)}
+                  required
+                />
+              </div>
+            </>
+          )}
+
+          {error && (
+            <div className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-600">
+              {error}
+            </div>
+          )}
+        </div>
 
         <DialogFooter className="mt-6">
           <DialogClose asChild>
@@ -1707,58 +1900,60 @@ function DeleteRecipientsModal({
             </DialogDescription>
           </DialogHeader>
 
-          {addonRecipients.length === 0 ? (
-            <p className="text-sm text-gray-600">
-              削除可能な受信者がいません。
-            </p>
-          ) : (
-            <ul className="space-y-2 mt-2">
-              {addonRecipients.map((r) => (
-                <li
-                  key={r.email}
-                  className={`flex items-center justify-between rounded-lg border bg-white px-3 py-2 text-sm ${
-                    selected.has(r.email)
-                      ? "border-red-300 bg-red-50"
-                      : "border-gray-200"
-                  }`}
-                >
-                  <div>
-                    {r.email}
-                    {r.pending_removal ? (
-                      <span className="ml-2 text-xs text-red-600">
-                        削除予定
-                      </span>
-                    ) : selected.has(r.email) ? (
-                      <span className="ml-2 text-xs text-red-600">
-                        削除対象
-                      </span>
-                    ) : null}
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    disabled={
-                      Boolean(r.pending_removal) || Boolean(pendingEmail)
-                    }
-                    onClick={() => toggleSelect(r.email)}
-                    aria-label={`${r.email} を選択`}
+          <div className="px-4 sm:px-6">
+            {addonRecipients.length === 0 ? (
+              <p className="text-sm text-gray-600">
+                削除可能な受信者がいません。
+              </p>
+            ) : (
+              <ul className="space-y-2 mt-2">
+                {addonRecipients.map((r) => (
+                  <li
+                    key={r.email}
+                    className={`flex items-center justify-between rounded-lg border bg-white px-3 py-2 text-sm ${
+                      selected.has(r.email)
+                        ? "border-red-300 bg-red-50"
+                        : "border-gray-200"
+                    }`}
                   >
-                    {selected.has(r.email) ? (
-                      "選択解除"
-                    ) : (
-                      <span className="text-lg">＋</span>
-                    )}
-                  </Button>
-                </li>
-              ))}
-            </ul>
-          )}
+                    <div>
+                      {r.email}
+                      {r.pending_removal ? (
+                        <span className="ml-2 text-xs text-red-600">
+                          削除予定
+                        </span>
+                      ) : selected.has(r.email) ? (
+                        <span className="ml-2 text-xs text-red-600">
+                          削除対象
+                        </span>
+                      ) : null}
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      disabled={
+                        Boolean(r.pending_removal) || Boolean(pendingEmail)
+                      }
+                      onClick={() => toggleSelect(r.email)}
+                      aria-label={`${r.email} を選択`}
+                    >
+                      {selected.has(r.email) ? (
+                        "選択解除"
+                      ) : (
+                        <span className="text-lg">×</span>
+                      )}
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            )}
 
-          {error && (
-            <div className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-600">
-              {error}
-            </div>
-          )}
+            {error && (
+              <div className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-600">
+                {error}
+              </div>
+            )}
+          </div>
 
           <DialogFooter className="mt-6">
             <DialogClose asChild>

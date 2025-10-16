@@ -2,7 +2,7 @@
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { stripe } from "@/lib/stripe";
 
-type Plan = "lite" | "business" | null;
+type Plan = "lite" | "business" | "trial" | null;
 
 interface SaveRecipientsBody {
   ownerEmail: string;
@@ -91,7 +91,11 @@ async function resolveOwnerContext(
         .select("user_stripe_id")
         .eq("email", ownerEmail);
       const ids = Array.from(
-        new Set((recs ?? []).map((r: any) => r?.user_stripe_id).filter((v: any) => typeof v === "number"))
+        new Set(
+          (recs ?? [])
+            .map((r: any) => r?.user_stripe_id)
+            .filter((v: any) => typeof v === "number")
+        )
       );
       if (ids.length) {
         const { data: fromLink } = await supabaseAdmin
@@ -103,10 +107,21 @@ async function resolveOwnerContext(
         userStripeRows = (fromLink ?? []) as UserStripeRow[];
       }
     }
-    // 代表プラン（何れかが設定されていれば優先）
-    plan =
-      (userStripeRows.find((r) => r.current_plan)?.current_plan as Plan) ??
-      null;
+    // 代表プラン: lite/business > trial を優先
+    if (userStripeRows.length) {
+      const rank = (p: Plan | null | undefined) =>
+        p === "business" ? 3 : p === "lite" ? 2 : p === "trial" ? 1 : 0;
+      const prioritized = [...userStripeRows].sort((a, b) => {
+        const r = rank(b.current_plan) - rank(a.current_plan);
+        if (r !== 0) return r;
+        return (
+          new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+        );
+      })[0];
+      plan = (prioritized?.current_plan as Plan) ?? null;
+    } else {
+      plan = null;
+    }
   } catch (err) {
     console.warn("resolveOwnerContext: failed to fetch user_stripe", err);
   }
@@ -201,11 +216,16 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 紐付け対象 user_stripe は、updated_at が最新の行を代表として使用
-    const parent = [...ctx.userStripeRows].sort(
-      (a, b) =>
+    // 紐付け対象 user_stripe は、lite/business > trial の優先順位で代表を選択
+    const parent = [...ctx.userStripeRows].sort((a, b) => {
+      const rank = (p: Plan | null | undefined) =>
+        p === "business" ? 3 : p === "lite" ? 2 : p === "trial" ? 1 : 0;
+      const r = rank(b.current_plan) - rank(a.current_plan);
+      if (r !== 0) return r;
+      return (
         new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
-    )[0];
+      );
+    })[0];
     // 追加登録分のみ保存（所有者メールは除外）
     const addonEmails = Array.from(new Set(cleaned));
     const rows = addonEmails.map((email) => ({
@@ -218,7 +238,10 @@ export async function POST(req: NextRequest) {
 
     const { error } = await supabaseAdmin
       .from("recipient_emails")
-      .upsert(rows, { onConflict: "user_stripe_id,email", ignoreDuplicates: true });
+      .upsert(rows, {
+        onConflict: "user_stripe_id,email",
+        ignoreDuplicates: true,
+      });
 
     if (error) {
       console.error("Insert recipients error:", error);
@@ -274,11 +297,28 @@ export async function PATCH(req: NextRequest) {
 
     const normalizedFrom = normalizeEmail(fromEmail);
     const normalizedTo = normalizeEmail(toEmail);
+    const normalizedOwner = normalizeEmail(ownerEmail);
 
     if (normalizedFrom === normalizedTo) {
       return NextResponse.json(
         { error: "同じメールアドレスには変更できません" },
         { status: 400 }
+      );
+    }
+
+    // 契約者のメールアドレスは変更不可（from が契約者）
+    if (normalizedFrom === normalizedOwner) {
+      return NextResponse.json(
+        { error: "契約者のメールアドレスは変更できません" },
+        { status: 403 }
+      );
+    }
+
+    // 契約者のメールアドレスへ変更も不可（to が契約者）
+    if (normalizedTo === normalizedOwner) {
+      return NextResponse.json(
+        { error: "契約者のメールアドレスへは変更できません" },
+        { status: 403 }
       );
     }
 
@@ -381,6 +421,15 @@ export async function DELETE(req: NextRequest) {
     }
 
     const normalizedTargets = Array.from(new Set(targets.map(normalizeEmail)));
+    const normalizedOwner = normalizeEmail(ownerEmail);
+
+    // 契約者のメールアドレスは削除不可
+    if (normalizedTargets.includes(normalizedOwner)) {
+      return NextResponse.json(
+        { error: "契約者のメールアドレスは削除できません" },
+        { status: 403 }
+      );
+    }
     const markIds: number[] = [];
     const skipped: string[] = [];
 
@@ -438,11 +487,16 @@ export async function DELETE(req: NextRequest) {
     // ここから追加：Billing Portal セッションを作成し、portalUrl を返す
     let portalUrl: string | undefined;
     try {
-      // updated_at が最新の user_stripe を代表にして customerId を取得
-      const parent = [...ctx.userStripeRows].sort(
-        (a, b) =>
+      // lite/business > trial の優先順位で代表を選択し customerId を取得
+      const parent = [...ctx.userStripeRows].sort((a, b) => {
+        const rank = (p: Plan | null | undefined) =>
+          p === "business" ? 3 : p === "lite" ? 2 : p === "trial" ? 1 : 0;
+        const r = rank(b.current_plan) - rank(a.current_plan);
+        if (r !== 0) return r;
+        return (
           new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
-      )[0];
+        );
+      })[0];
       const customerId = parent?.stripe_customer_id || undefined;
 
       if (customerId) {

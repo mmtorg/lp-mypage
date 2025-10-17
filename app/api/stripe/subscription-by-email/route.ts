@@ -212,6 +212,7 @@ export async function GET(req: NextRequest) {
         let currency: string | undefined;
         let recipients: RecipientInfo[] = [];
         let purchasedItems: PurchasedItem[] = [];
+        let trialEndSec: number | undefined;
         let primaryInterval: string | undefined;
         try {
           if (cached.stripe_customer_id) {
@@ -222,6 +223,15 @@ export async function GET(req: NextRequest) {
             const valids = all.data.filter((s) => VALID_STATUSES.has(String(s.status).toLowerCase()));
             let primaryCaptured = false;
             for (const sub of valids) {
+              // capture trial end if trialing
+              try {
+                if (sub.status === "trialing" && (sub as any)?.trial_end) {
+                  const t = Number((sub as any).trial_end);
+                  if (Number.isFinite(t)) {
+                    trialEndSec = Math.max(trialEndSec ?? 0, t);
+                  }
+                }
+              } catch {}
               const { items, primaryName, primaryPrice } = await collectSubscriptionItems(sub);
               purchasedItems.push(...items);
               if (!primaryCaptured && primaryName) {
@@ -251,6 +261,9 @@ export async function GET(req: NextRequest) {
           recipients,
           purchased_items: purchasedItems,
           is_trialing: finalPlan === "trial",
+          ...(trialEndSec && finalPlan === "trial"
+            ? { trial_ends_at: new Date(trialEndSec * 1000).toISOString() }
+            : {}),
         });
       }
 
@@ -263,6 +276,7 @@ export async function GET(req: NextRequest) {
           let currency: string | undefined;
           let recipients: RecipientInfo[] = [];
           let purchasedItems: PurchasedItem[] = [];
+          let trialEndSec: number | undefined;
           let primaryInterval: string | undefined;
           try {
             if (cached.stripe_customer_id) {
@@ -273,6 +287,14 @@ export async function GET(req: NextRequest) {
               const valids = all.data.filter((s) => VALID_STATUSES.has(String(s.status).toLowerCase()));
               let primaryCaptured = false;
               for (const sub of valids) {
+                try {
+                  if (sub.status === "trialing" && (sub as any)?.trial_end) {
+                    const t = Number((sub as any).trial_end);
+                    if (Number.isFinite(t)) {
+                      trialEndSec = Math.max(trialEndSec ?? 0, t);
+                    }
+                  }
+                } catch {}
                 const { items, primaryName, primaryPrice } = await collectSubscriptionItems(sub);
                 purchasedItems.push(...items);
                 if (!primaryCaptured && primaryName) {
@@ -302,6 +324,9 @@ export async function GET(req: NextRequest) {
             recipients,
             purchased_items: purchasedItems,
             is_trialing: finalPlan === "trial",
+            ...(trialEndSec && finalPlan === "trial"
+              ? { trial_ends_at: new Date(trialEndSec * 1000).toISOString() }
+              : {}),
           });
         } else if (debugMode) {
           console.log("[sub-by-email] bypass cache (stale or null)", { ageMs, cachedPlan: cached.current_plan });
@@ -344,6 +369,7 @@ export async function GET(req: NextRequest) {
     let is_trialing = false;
     let primaryInterval: string | undefined;
     let primaryPriceInfo: { unit_amount?: number; currency?: string } | undefined;
+    let trialEndSec: number | undefined;
     for (const c of customers.data) {
       const all = await safeStripeCall(
         () => stripe.subscriptions.list({ customer: c.id, status: "all", limit: 10 }),
@@ -362,6 +388,15 @@ export async function GET(req: NextRequest) {
           hasTrial = true;
         }
         try {
+          // capture trial end if trialing
+          try {
+            if (sub.status === "trialing" && (sub as any)?.trial_end) {
+              const t = Number((sub as any).trial_end);
+              if (Number.isFinite(t)) {
+                trialEndSec = Math.max(trialEndSec ?? 0, t);
+              }
+            }
+          } catch {}
           const inferred = await inferPlanFromSubscription(sub);
           if (inferred === "business") hasBusiness = true;
           if (inferred === "lite") hasLite = true;
@@ -495,6 +530,9 @@ export async function GET(req: NextRequest) {
             is_trialing: finalPlan === "trial",
             billing_interval: (primaryInterval as any) || null,
             debug,
+            ...(trialEndSec && finalPlan === "trial"
+              ? { trial_ends_at: new Date(trialEndSec * 1000).toISOString() }
+              : {}),
           }
         : {
             current_plan: finalPlan,
@@ -506,6 +544,9 @@ export async function GET(req: NextRequest) {
             purchased_items: purchasedItems,
             is_trialing: finalPlan === "trial",
             billing_interval: (primaryInterval as any) || null,
+            ...(trialEndSec && finalPlan === "trial"
+              ? { trial_ends_at: new Date(trialEndSec * 1000).toISOString() }
+              : {}),
           }
     );
   } catch (e) {

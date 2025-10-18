@@ -7,35 +7,42 @@ export default function TrialStartPage() {
   const [isPopup, setIsPopup] = useState(false);
 
   useEffect(() => {
-    // ✅ ページがポップアップで開かれたかを判定
     setIsPopup(!!window.opener);
 
     const run = async () => {
       try {
-        const hash = new URLSearchParams(window.location.hash.slice(1));
-        const email = hash.get("e");
+        const url = new URL(window.location.href);
+        const email = url.searchParams.get("e"); // ✅ ?e=... で受け取る
+
         if (!email) {
           setMessage("メールアドレスが見つかりません。");
           return;
         }
+
+        // ✅ 追加（最小変更点）：読み取ったら即URLからクエリを除去（履歴は汚さない）
+        history.replaceState(null, "", `${url.origin}${url.pathname}`);
+
         const res = await fetch("/api/trial/request", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ email }),
         });
+
         const json = await res.json();
+
         if (json?.ok && json?.already) {
           if (json?.reason === "current") {
             setMessage("すでに無料トライアルは開始済みです。");
           } else if (json?.reason === "ended") {
             setMessage(
-              "無料トライアルが既に終了しています。\n無料トライアルは1回のみです。"
+              "無料トライアルが終了しています。\n無料トライアルは1回のみです。"
             );
           } else {
             setMessage("すでに無料トライアルは開始済みです。");
           }
           return;
         }
+
         if (json?.ok) {
           setMessage("無料トライアルを開始しました。");
           setDetail(
@@ -43,6 +50,7 @@ export default function TrialStartPage() {
           );
           return;
         }
+
         setMessage("エラーが発生しました。");
         setDetail(typeof json?.error === "string" ? json.error : null);
       } catch (e: unknown) {
@@ -56,21 +64,19 @@ export default function TrialStartPage() {
         }
       }
     };
+
     run();
   }, []);
 
   const handleClose = () => {
-    // ✅ ポップアップのみ自動で閉じる
-    if (window.opener) {
-      window.close();
-    }
+    if (window.opener) window.close();
   };
 
   return (
     <main className="mx-auto max-w-lg p-6 text-center">
       <h1 className="text-xl font-bold mb-4">無料トライアル</h1>
       <p style={{ whiteSpace: "pre-line" }}>{message}</p>
-      {detail ? <p className="mt-2 text-sm text-gray-600">{detail}</p> : null}
+      {detail && <p className="mt-2 text-sm text-gray-600">{detail}</p>}
       {message !== "処理中です..." && (
         <div className="mt-8 flex justify-center">
           {isPopup ? (

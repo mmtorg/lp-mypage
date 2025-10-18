@@ -293,7 +293,7 @@ export default function MyPage() {
                         検索中...
                       </>
                     ) : (
-                      "購読状況を確認"
+                      "サブスクリプションを確認"
                     )}
                   </Button>
                   <Button asChild variant="outline" className="w-full mt-2">
@@ -466,7 +466,7 @@ export default function MyPage() {
           <Card className="rounded-2xl border-0 shadow-md">
             <CardHeader className="pb-3">
               <CardTitle className="text-xl">
-                有効な購読が見つかりませんでした
+                有効なサブスクリプションが見つかりませんでした
               </CardTitle>
               <CardDescription>{sub.email || email}</CardDescription>
             </CardHeader>
@@ -911,7 +911,7 @@ function ResolvedView({
       <Card className="rounded-2xl border-0 shadow-md">
         <CardHeader className="pb-3">
           <CardTitle className="text-xl">
-            有効な購読が見つかりませんでした
+            有効なサブスクリプションが見つかりませんでした
           </CardTitle>
           <CardDescription>{email}</CardDescription>
         </CardHeader>
@@ -2227,15 +2227,13 @@ function formatDateJPLong(iso?: string) {
 function NoSubscription({ onReset }: { onReset?: () => void }) {
   return (
     <div className="space-y-4">
-      <p className="text-gray-700">
-        有効な購読がありません。トップからプランをご確認ください。
-      </p>
+      <p className="text-gray-700">有効なサブスクリプションがありません。</p>
       <Button asChild className="w-full">
-        <a href="/">トップへ戻る</a>
+        <a href="/">ランディングページに戻る</a>
       </Button>
       {onReset ? (
         <Button variant="outline" onClick={onReset} className="w-full">
-          メールを変えて再検索
+          メールアドレス入力に戻る
         </Button>
       ) : null}
     </div>

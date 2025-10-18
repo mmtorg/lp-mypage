@@ -9,6 +9,15 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
-}
+  async redirects() {
+    return [
+      {
+        source: "/so/tr/:path*",
+        destination: "https://myanmar-news-alert.vercel.app/",
+        permanent: false,
+      },
+    ];
+  },
+};
 
-export default nextConfig
+export default nextConfig;

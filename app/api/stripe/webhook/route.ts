@@ -28,13 +28,17 @@ export async function POST(req: NextRequest) {
         // Stripeのcustomer.email変更をローカルDBへ反映しない。
         try {
           const customer = event.data.object as any;
-          const previousEmail = (event.data.previous_attributes?.email as string) || null;
+          const previousEmail =
+            (event.data.previous_attributes?.email as string) || null;
           const newEmail = (customer?.email as string) || null;
-          console.log("[webhook] customer.updated received (no local email sync)", {
-            customerId: customer?.id,
-            previousEmail,
-            newEmail,
-          });
+          console.log(
+            "[webhook] customer.updated received (no local email sync)",
+            {
+              customerId: customer?.id,
+              previousEmail,
+              newEmail,
+            }
+          );
         } catch {}
         break;
       }
@@ -74,10 +78,12 @@ export async function POST(req: NextRequest) {
             if (LITE_PRICE_IDS.includes(priceId)) return "lite";
             if (BUSINESS_PRICE_IDS.includes(priceId)) return "business";
             try {
-              const price = await stripe.prices.retrieve(priceId, { expand: ["product"] });
+              const price = await stripe.prices.retrieve(priceId, {
+                expand: ["product"],
+              });
               const product = price.product as any;
               const metadataType = (product as any)?.metadata?.type;
-              if (metadataType === 'trial') return 'trial';
+              if (metadataType === "trial") return "trial";
               const name = product?.name?.toLowerCase?.() || "";
               if (name.includes("lite")) return "lite";
               if (name.includes("business")) return "business";
@@ -136,11 +142,26 @@ export async function POST(req: NextRequest) {
                     } catch {}
                     await stripe.subscriptions.cancel(subId);
                     // Optional cleanup: delete orphan customer if no active/trialing subs left
-                    
                   }
                 }
               } catch (e) {
-                console.warn("[webhook] duplicate-trial check failed (checkout)", e);
+                console.warn(
+                  "[webhook] duplicate-trial check failed (checkout)",
+                  e
+                );
+              }
+
+              // === ADD: トライアル商品なら「期間末で自動解約」を予約（冪等） ===
+              try {
+                const trialLike = await isTrialSubscription(sub as any);
+                if (trialLike) {
+                  await ensureCancelAtPeriodEnd(sub.id);
+                }
+              } catch (e) {
+                console.warn(
+                  "[webhook] auto-cancel at period end scheduling (checkout) failed",
+                  e
+                );
               }
             } else if (session?.id) {
               // Fallback: try line items to guess plan (no status check possible here)
@@ -381,10 +402,13 @@ export async function POST(req: NextRequest) {
             if (price?.product) {
               try {
                 const prodAny = price.product as any;
-                const productId: string | undefined = typeof prodAny === 'string' ? prodAny : prodAny?.id;
+                const productId: string | undefined =
+                  typeof prodAny === "string" ? prodAny : prodAny?.id;
                 if (productId) {
                   const product = await stripe.products.retrieve(productId);
-                  if (product?.metadata?.type) createdVia = mapTypeToVia(product.metadata.type) ?? undefined;
+                  if (product?.metadata?.type)
+                    createdVia =
+                      mapTypeToVia(product.metadata.type) ?? undefined;
                 }
               } catch {}
             }
@@ -410,9 +434,15 @@ export async function POST(req: NextRequest) {
               }
               const { error: ownerErr } = await supabaseAdmin
                 .from("recipient_emails")
-                .upsert([ownerRow], { onConflict: "user_stripe_id,email", ignoreDuplicates: true });
+                .upsert([ownerRow], {
+                  onConflict: "user_stripe_id,email",
+                  ignoreDuplicates: true,
+                });
               if (ownerErr)
-                console.error("recipient_emails upsert (owner) error", ownerErr);
+                console.error(
+                  "recipient_emails upsert (owner) error",
+                  ownerErr
+                );
             }
 
             // 2) 追加入力のメールを後で upsert（custom_fields/metadata 由来）
@@ -431,9 +461,15 @@ export async function POST(req: NextRequest) {
               });
               const { error: recipErr } = await supabaseAdmin
                 .from("recipient_emails")
-                .upsert(rows, { onConflict: "user_stripe_id,email", ignoreDuplicates: true });
+                .upsert(rows, {
+                  onConflict: "user_stripe_id,email",
+                  ignoreDuplicates: true,
+                });
               if (recipErr)
-                console.error("recipient_emails upsert (extras) error", recipErr);
+                console.error(
+                  "recipient_emails upsert (extras) error",
+                  recipErr
+                );
               console.log("[webhook] recipients upserted", {
                 count: rows.length,
                 parentId: parent.id,
@@ -504,9 +540,7 @@ export async function POST(req: NextRequest) {
           .split(",")
           .map((s) => s.trim())
           .filter(Boolean);
-        const BUSINESS_PRICE_IDS = (
-          process.env.STRIPE_PRICE_IDS_BUSINESS || ""
-        )
+        const BUSINESS_PRICE_IDS = (process.env.STRIPE_PRICE_IDS_BUSINESS || "")
           .split(",")
           .map((s) => s.trim())
           .filter(Boolean);
@@ -536,8 +570,8 @@ export async function POST(req: NextRequest) {
             if (productId) {
               const product = await stripe.products.retrieve(productId);
               const metadataType = (product as any)?.metadata?.type;
-              if (metadataType === 'trial') {
-                planType = 'trial';
+              if (metadataType === "trial") {
+                planType = "trial";
               } else {
                 const name = (product.name || "").toLowerCase();
                 if (name.includes("lite")) planType = "lite";
@@ -565,11 +599,16 @@ export async function POST(req: NextRequest) {
         // Enforce: one-time free trial per email/customer
         try {
           const isTrialProduct = await isTrialSubscription(sub);
-          if (isTrialProduct && event.type === "customer.subscription.created") {
+          if (
+            isTrialProduct &&
+            event.type === "customer.subscription.created"
+          ) {
             // Retrieve customer email (may be null)
             let ownerEmail: string | null = null;
             try {
-              ownerEmail = ((await stripe.customers.retrieve(customerId)) as any)?.email ?? null;
+              ownerEmail =
+                ((await stripe.customers.retrieve(customerId)) as any)?.email ??
+                null;
             } catch {}
             const alreadyHadTrial = await hasPriorTrialForCustomerOrEmail(
               customerId,
@@ -588,11 +627,23 @@ export async function POST(req: NextRequest) {
               } catch {}
               await stripe.subscriptions.cancel(sub.id);
               // After cancel, continue to clean-up paths below as needed (no throw)
-              
             }
           }
         } catch (e) {
           console.warn("[webhook] duplicate-trial check failed (sub.*)", e);
+        }
+
+        // === ADD: トライアル商品なら「期間末で自動解約」を予約（冪等） ===
+        try {
+          const trialLike = await isTrialSubscription(sub);
+          if (trialLike) {
+            await ensureCancelAtPeriodEnd(sub.id);
+          }
+        } catch (e) {
+          console.warn(
+            "[webhook] auto-cancel at period end scheduling (sub.*) failed",
+            e
+          );
         }
 
         // Note: trial end behavior (cancel if missing payment method) is managed on Stripe settings now.
@@ -628,20 +679,77 @@ export async function POST(req: NextRequest) {
               .maybeSingle();
             parent = upd.data ?? bySub.data;
           } else {
-          // Try by customer_id
-          const byCust = await supabaseAdmin
-            .from("user_stripe")
-            .select("id, stripe_subscription_id")
-            .eq("stripe_customer_id", customerId)
-            .order("updated_at", { ascending: false })
-            .limit(1)
-            .maybeSingle();
-          if (!byCust.error && byCust.data?.id) {
-            // If existing row has different subscription, create a new row instead of overwriting
-            if (
-              byCust.data.stripe_subscription_id &&
-              byCust.data.stripe_subscription_id !== sub.id
-            ) {
+            // Try by customer_id
+            const byCust = await supabaseAdmin
+              .from("user_stripe")
+              .select("id, stripe_subscription_id")
+              .eq("stripe_customer_id", customerId)
+              .order("updated_at", { ascending: false })
+              .limit(1)
+              .maybeSingle();
+            if (!byCust.error && byCust.data?.id) {
+              // If existing row has different subscription, create a new row instead of overwriting
+              if (
+                byCust.data.stripe_subscription_id &&
+                byCust.data.stripe_subscription_id !== sub.id
+              ) {
+                const ins = await supabaseAdmin
+                  .from("user_stripe")
+                  .insert({
+                    email: ownerEmail,
+                    stripe_customer_id: customerId,
+                    stripe_subscription_id: sub.id,
+                    current_plan: planType,
+                    updated_at: nowIso,
+                  })
+                  .select("id")
+                  .maybeSingle();
+                parent = ins.data ?? null;
+                if (ins.error) {
+                  const code = (ins.error as any)?.code;
+                  if (code === "23505") {
+                    // 競合時は既存行を取り直す
+                    const existedBySub = await supabaseAdmin
+                      .from("user_stripe")
+                      .select("id")
+                      .eq("stripe_subscription_id", sub.id)
+                      .maybeSingle();
+                    if (!existedBySub.error && existedBySub.data?.id) {
+                      parent = existedBySub.data;
+                    } else {
+                      const existedByCust = await supabaseAdmin
+                        .from("user_stripe")
+                        .select("id")
+                        .eq("stripe_customer_id", customerId)
+                        .order("updated_at", { ascending: false })
+                        .limit(1)
+                        .maybeSingle();
+                      if (!existedByCust.error && existedByCust.data?.id) {
+                        parent = existedByCust.data;
+                      }
+                    }
+                  } else {
+                    console.error(
+                      "[webhook] insert user_stripe (sub events, new sub for same customer) failed",
+                      ins.error
+                    );
+                  }
+                }
+              } else {
+                // Update metadata on the existing row; do not change linkage when it differs
+                const upd = await supabaseAdmin
+                  .from("user_stripe")
+                  .update({
+                    email: ownerEmail,
+                    current_plan: planType,
+                    updated_at: nowIso,
+                  })
+                  .eq("id", byCust.data.id)
+                  .select("id")
+                  .maybeSingle();
+                parent = upd.data ?? byCust.data;
+              }
+            } else {
               const ins = await supabaseAdmin
                 .from("user_stripe")
                 .insert({
@@ -679,69 +787,12 @@ export async function POST(req: NextRequest) {
                   }
                 } else {
                   console.error(
-                    "[webhook] insert user_stripe (sub events, new sub for same customer) failed",
+                    "[webhook] insert user_stripe (sub events) failed",
                     ins.error
                   );
                 }
               }
-            } else {
-              // Update metadata on the existing row; do not change linkage when it differs
-              const upd = await supabaseAdmin
-                .from("user_stripe")
-                .update({
-                  email: ownerEmail,
-                  current_plan: planType,
-                  updated_at: nowIso,
-                })
-                .eq("id", byCust.data.id)
-                .select("id")
-                .maybeSingle();
-              parent = upd.data ?? byCust.data;
             }
-          } else {
-            const ins = await supabaseAdmin
-              .from("user_stripe")
-              .insert({
-                email: ownerEmail,
-                stripe_customer_id: customerId,
-                stripe_subscription_id: sub.id,
-                current_plan: planType,
-                updated_at: nowIso,
-              })
-              .select("id")
-              .maybeSingle();
-            parent = ins.data ?? null;
-            if (ins.error) {
-              const code = (ins.error as any)?.code;
-              if (code === "23505") {
-                // 競合時は既存行を取り直す
-                const existedBySub = await supabaseAdmin
-                  .from("user_stripe")
-                  .select("id")
-                  .eq("stripe_subscription_id", sub.id)
-                  .maybeSingle();
-                if (!existedBySub.error && existedBySub.data?.id) {
-                  parent = existedBySub.data;
-                } else {
-                  const existedByCust = await supabaseAdmin
-                    .from("user_stripe")
-                    .select("id")
-                    .eq("stripe_customer_id", customerId)
-                    .order("updated_at", { ascending: false })
-                    .limit(1)
-                    .maybeSingle();
-                  if (!existedByCust.error && existedByCust.data?.id) {
-                    parent = existedByCust.data;
-                  }
-                }
-              } else {
-                console.error(
-                  "[webhook] insert user_stripe (sub events) failed",
-                  ins.error
-                );
-              }
-            }
-          }
           }
           console.log("[webhook] updated plan", {
             customerId,
@@ -771,7 +822,9 @@ export async function POST(req: NextRequest) {
                 const productId: string | undefined =
                   typeof prodAny === "string" ? prodAny : prodAny?.id;
                 const priceAny: any = item?.price;
-                const pmt = String(priceAny?.metadata?.type || "").toLowerCase();
+                const pmt = String(
+                  priceAny?.metadata?.type || ""
+                ).toLowerCase();
                 if (pmt === "basic" || pmt === "trial") createdVia = "initial";
                 else if (pmt === "add" || pmt === "addon") createdVia = "addon";
                 else if (productId) {
@@ -789,7 +842,8 @@ export async function POST(req: NextRequest) {
                   email: ownerEmail,
                   plan: planType,
                 };
-                if (createdVia !== undefined) upsertRow.created_via = createdVia;
+                if (createdVia !== undefined)
+                  upsertRow.created_via = createdVia;
                 if (parent?.id) (upsertRow as any).user_stripe_id = parent.id;
                 await supabaseAdmin
                   .from("recipient_emails")
@@ -828,7 +882,7 @@ export async function POST(req: NextRequest) {
         console.log(`Unhandled event: ${event.type}`);
     }
 
-  return NextResponse.json({ received: true });
+    return NextResponse.json({ received: true });
   } catch (err: any) {
     console.error("Webhook handler error:", err);
     return new NextResponse("Server error", { status: 500 });
@@ -889,10 +943,38 @@ async function isTrialSubscription(sub: any): Promise<boolean> {
     if (pmt === "trial") return true;
     if (priceId && TRIAL_PRICES.has(priceId)) return true;
     const prodAny = price?.product as any;
-    const productId: string | undefined = typeof prodAny === "string" ? prodAny : prodAny?.id;
+    const productId: string | undefined =
+      typeof prodAny === "string" ? prodAny : prodAny?.id;
     if (productId && TRIAL_PRODUCTS.has(productId)) return true;
   } catch {}
   return false;
+}
+
+// --- Auto-cancel helper (ADD) ---
+async function ensureCancelAtPeriodEnd(subId: string) {
+  try {
+    const sub = await stripe.subscriptions.retrieve(subId);
+    // trial 中のみ対象。cancel_at（固定解約）が既に入っている場合は触らない。
+    if (!sub || sub.status !== "trialing") return;
+    const hasFixedCancelAt = Boolean(sub.cancel_at);
+    const alreadyAtPeriodEnd = Boolean(sub.cancel_at_period_end);
+    if (hasFixedCancelAt || alreadyAtPeriodEnd) {
+      console.log("[webhook] auto-cancel already set", {
+        subscription: sub.id,
+        cancel_at: sub.cancel_at,
+        cancel_at_period_end: sub.cancel_at_period_end,
+      });
+      return;
+    }
+    await stripe.subscriptions.update(sub.id, {
+      cancel_at_period_end: true, // ← 「現在の期間末」で解約（トライアル延長/短縮にも追従）
+    });
+    console.log("[webhook] scheduled auto-cancel at period end", {
+      subscription: sub.id,
+    });
+  } catch (e) {
+    console.warn("[webhook] ensureCancelAtPeriodEnd failed", { subId, e });
+  }
 }
 
 async function hasPriorTrialForCustomerOrEmail(
@@ -903,7 +985,11 @@ async function hasPriorTrialForCustomerOrEmail(
   // 1) Check the given customer first
   try {
     if (customerId) {
-      const subs = await stripe.subscriptions.list({ customer: customerId, status: "all", limit: 100 });
+      const subs = await stripe.subscriptions.list({
+        customer: customerId,
+        status: "all",
+        limit: 100,
+      });
       for (const s of subs.data) {
         if (excludeSubId && s.id === excludeSubId) continue;
         const trial = await isTrialSubscription(s as any);
@@ -925,7 +1011,11 @@ async function hasPriorTrialForCustomerOrEmail(
       const list = found && Array.isArray(found.data) ? found.data : [];
       for (const c of list) {
         if (customerId && c.id === customerId) continue;
-        const subs = await stripe.subscriptions.list({ customer: c.id, status: "all", limit: 100 });
+        const subs = await stripe.subscriptions.list({
+          customer: c.id,
+          status: "all",
+          limit: 100,
+        });
         for (const s of subs.data) {
           const trial = await isTrialSubscription(s as any);
           if (trial) return true;

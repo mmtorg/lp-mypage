@@ -56,6 +56,7 @@ interface SubscriptionData {
   recipients?: RecipientInfo[];
   purchased_items?: PurchasedItem[];
   is_trialing?: boolean;
+  trial_ends_at?: string;
 }
 
 export default function MyPage() {
@@ -292,7 +293,7 @@ export default function MyPage() {
                         検索中...
                       </>
                     ) : (
-                      "購読状況を確認"
+                      "サブスクリプションを確認"
                     )}
                   </Button>
                   <Button asChild variant="outline" className="w-full mt-2">
@@ -316,6 +317,7 @@ export default function MyPage() {
             recipients={sub.recipients}
             purchasedItems={sub.purchased_items}
             isTrialing={sub.is_trialing}
+            trialEndsAt={sub.trial_ends_at}
             onRefetch={refreshByEmail}
             onLogout={async () => {
               const supabase = getSupabaseBrowser();
@@ -464,7 +466,7 @@ export default function MyPage() {
           <Card className="rounded-2xl border-0 shadow-md">
             <CardHeader className="pb-3">
               <CardTitle className="text-xl">
-                有効な購読が見つかりませんでした
+                有効なサブスクリプションが見つかりませんでした
               </CardTitle>
               <CardDescription>{sub.email || email}</CardDescription>
             </CardHeader>
@@ -727,6 +729,7 @@ type ResolvedViewProps = {
   onLogout: () => void | Promise<void>;
   onRefetch?: (targetEmail?: string) => void | Promise<void>;
   isTrialing?: boolean;
+  trialEndsAt?: string;
   recipLimits?: {
     plan: Plan;
     base_slots: number;
@@ -748,6 +751,7 @@ function ResolvedView({
   onLogout,
   onRefetch,
   isTrialing,
+  trialEndsAt,
   recipLimits,
 }: ResolvedViewProps) {
   const { toast } = useToast();
@@ -889,12 +893,13 @@ function ResolvedView({
             <h3 className="border-b border-gray-200 pb-2 text-xl font-semibold text-gray-900">
               サブスクリプションの管理
             </h3>
-            <div className="space-y-2 rounded-md bg-gray-50 p-4 text-sm text-gray-600">
-              <ul className="list-disc pl-5 space-y-1">
-                <li>無料トライアルの解約は管理画面から行えます。</li>
-              </ul>
+            <div className="space-y-2 rounded-md bg-gray-50 p-4 text-sm text-gray-700">
+              <p>
+                {`無料トライアル期間が${formatDateJPLong(
+                  trialEndsAt
+                )}に終了します。`}
+              </p>
             </div>
-            <PortalButton email={email} />
           </section>
         </CardContent>
       </Card>
@@ -906,7 +911,7 @@ function ResolvedView({
       <Card className="rounded-2xl border-0 shadow-md">
         <CardHeader className="pb-3">
           <CardTitle className="text-xl">
-            有効な購読が見つかりませんでした
+            有効なサブスクリプションが見つかりませんでした
           </CardTitle>
           <CardDescription>{email}</CardDescription>
         </CardHeader>
@@ -1010,6 +1015,9 @@ function ResolvedView({
           <h3 className="border-b border-gray-200 pb-2 text-xl font-semibold text-gray-900">
             配信先の管理
           </h3>
+          <p className="text-sm text-gray-600">
+            管理者のメールアドレスは変更・削除出来ません。
+          </p>
           <div className="grid gap-2 sm:grid-cols-3">
             <AddRecipientsModal
               email={email}
@@ -1110,6 +1118,8 @@ function AddRecipientsModal({
   const [payableCountPlanned, setPayableCountPlanned] = useState(0);
   const [freeEmailsPlanned, setFreeEmailsPlanned] = useState<string[]>([]);
   const [paidEmailsPlanned, setPaidEmailsPlanned] = useState<string[]>([]);
+  const [paidCount, setPaidCount] = useState<number>(0); // 保存完了後の追加購入数
+  const [freeCount, setFreeCount] = useState<number>(0); // 無料枠で追加できた件数
 
   const isFirstTimeAddonPurchase = useMemo(
     () =>
@@ -1330,6 +1340,8 @@ function AddRecipientsModal({
           setUpdatedProductName(String(d.productName ?? "追加受信者"));
           setUpdatedQuantity(Number(d.newQuantity ?? payableCountPlanned));
           setPortalUrl(String(d.portalUrl));
+          setPaidCount(payableCountPlanned);
+          setFreeCount(freeCountPlanned ?? 0);
           setPostUpdateOpen(true);
           setSuspendReset(false);
           setOpen(false);
@@ -1339,10 +1351,15 @@ function AddRecipientsModal({
           );
         }
       } else {
-        // 全て無料で完了
-        try {
-          window.location.reload();
-        } catch {}
+        // 全て無料で完了 → 成功モーダルを表示（リロードせずに文言出し分け）
+        setPaidCount(0);
+        setFreeCount(freeCountPlanned ?? 0);
+        setUpdatedProductName("追加受信者");
+        setUpdatedQuantity(freeCountPlanned);
+        setPortalUrl("");
+        setPostUpdateOpen(true);
+        setSuspendReset(false);
+        setOpen(false);
       }
     } catch (err) {
       setError(
@@ -1354,6 +1371,14 @@ function AddRecipientsModal({
     }
   };
 
+  // 入力済みのメール数（空白はカウントしない）
+  const validEmailCount = emails.reduce((n, v) => n + (v.trim() ? 1 : 0), 0);
+  // 入力を反映した残り無料枠（マイナスにならない）
+  const remainingAfterInput = Math.max(
+    0,
+    Number(remainingSlots ?? 0) - validEmailCount
+  );
+
   return (
     <>
       <Dialog open={open} onOpenChange={setOpen}>
@@ -1363,10 +1388,10 @@ function AddRecipientsModal({
         <DialogContent>
           <DialogHeader>
             <DialogTitle className="text-xl font-bold">
-              受信者を追加
+              配信先を追加
             </DialogTitle>
             <DialogDescription>
-              追加する受信者の数とメールアドレスを入力してください。
+              追加する配信先のメールアドレスを入力してください。
               {awaitingCheckoutRedirect && (
                 <>
                   <br />
@@ -1376,20 +1401,31 @@ function AddRecipientsModal({
             </DialogDescription>
           </DialogHeader>
 
-          {typeof unitAmount !== "undefined" && !isAllFree && (
-            <div className="rounded-md bg-gray-50 p-3 text-sm text-gray-700">
-              料金（{billingInterval === "year" ? "年額" : "月額"}）：
-              {formatCurrency(unitAmount, currency)} / 1メール
+          <div className="px-4 sm:px-6 mt-2">
+            {/* 上部3ブロックをまとめて縦間隔を確保 */}
+            <div className="space-y-2">
+              {/* ① 現在の残り無料枠（動的） */}
+              {typeof remainingSlots === "number" && (
+                <div className="rounded-md bg-blue-50 p-3 text-sm text-blue-800">
+                  現在の残り無料枠：{remainingAfterInput}
+                </div>
+              )}
+
+              {/* ② 注意文（太字＆少し大きめ） */}
+              <p className="text-sm">
+                ※ 無料枠を超えた配信先追加は追加購入となります
+              </p>
+
+              {/* ③ 料金（左右余白は上と同一コンテナなので揃う） */}
+              {typeof unitAmount !== "undefined" && !isAllFree && (
+                <div className="rounded-md bg-gray-50 p-3 text-sm text-gray-700">
+                  料金（{billingInterval === "year" ? "年額" : "月額"}）：
+                  {formatCurrency(unitAmount, currency)} / 1メール
+                </div>
+              )}
             </div>
-          )}
 
-          <div className="px-4 sm:px-6">
-            {typeof remainingSlots === "number" && (
-              <div className="rounded-md bg-blue-50 p-3 text-sm text-blue-800 mt-2">
-                現在の残り無料枠：{Math.max(0, Number(remainingSlots || 0))}
-              </div>
-            )}
-
+            {/* 入力フォーム */}
             <div className="space-y-3 mt-4">
               <Label>メールアドレス</Label>
               {emails.map((value, index) => (
@@ -1417,7 +1453,6 @@ function AddRecipientsModal({
                 </div>
               ))}
 
-              {/* 行の追加/削除ボタン（最大10） */}
               <div className="flex items-center gap-2 pt-1">
                 <Button
                   variant="outline"
@@ -1432,18 +1467,18 @@ function AddRecipientsModal({
                   + 追加
                 </Button>
               </div>
-            </div>
 
-            {(hasExistingDuplicate || hasInternalDuplicate) && (
-              <div className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-600">
-                入力されたメールに重複があります。既存・相互の重複を解消してください。
-              </div>
-            )}
-            {error && (
-              <div className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-600">
-                {error}
-              </div>
-            )}
+              {(hasExistingDuplicate || hasInternalDuplicate) && (
+                <div className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-600">
+                  メールアドレスが重複しています。
+                </div>
+              )}
+              {error && (
+                <div className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-600">
+                  {error}
+                </div>
+              )}
+            </div>
           </div>
 
           <DialogFooter className="mt-6">
@@ -1464,7 +1499,7 @@ function AddRecipientsModal({
                   反映中...
                 </>
               ) : (
-                "内容を確認"
+                "確認へ進む"
               )}
             </Button>
           </DialogFooter>
@@ -1486,16 +1521,26 @@ function AddRecipientsModal({
             </DialogTitle>
             <DialogDescription className="mb-6 leading-relaxed">
               {payableCountPlanned > 0 ? (
-                <>
-                  合計金額：
-                  {formatCurrency(
-                    (unitAmount || 0) * payableCountPlanned,
-                    currency
+                // 追加購入が存在する場合
+                <div className="space-y-1">
+                  {/* 無料枠で入る分があるときだけ先頭に表示 */}
+                  {freeCountPlanned > 0 && (
+                    <div>無料枠で追加：{freeCountPlanned}件</div>
                   )}
-                </>
+                  <div>配信先追加購入：{payableCountPlanned}件</div>
+                  <div>
+                    追加購入金額：
+                    {formatCurrency(
+                      (unitAmount || 0) * payableCountPlanned,
+                      currency
+                    )}
+                  </div>
+                </div>
               ) : (
-                <>無料枠内の追加です（課金なし）</>
+                // すべて無料枠内のとき
+                <div>無料枠で追加：{freeCountPlanned}件</div>
               )}
+
               {awaitingCheckoutRedirect && (
                 <span className="mt-4 block text-sm text-muted-foreground">
                   続行するとチェックアウト画面に遷移します。
@@ -1536,7 +1581,7 @@ function AddRecipientsModal({
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" /> 処理中...
                   </>
                 ) : (
-                  "OK"
+                  "確定"
                 )}
               </Button>
             )}
@@ -1544,15 +1589,28 @@ function AddRecipientsModal({
         </DialogContent>
       </Dialog>
 
-      {/* 反映後ダイアログ（Portal 案内） */}
+      {/* 反映後ダイアログ */}
       <Dialog open={postUpdateOpen} onOpenChange={setPostUpdateOpen}>
         <DialogContent>
           <DialogHeader>
+            {/* タイトル：更新 → 追加 */}
             <DialogTitle className="text-lg font-bold">
-              更新が完了しました
+              追加が完了しました
             </DialogTitle>
-            <DialogDescription className="mb-6">
-              {`${updatedProductName} の数量が ${updatedQuantity} に更新されました。`}
+
+            {/* 本文：追加購入の有無で出し分け */}
+            <DialogDescription className="mb-6 leading-relaxed">
+              {paidCount > 0 ? (
+                // 追加購入が存在する場合
+                <div className="space-y-1">
+                  {/* 無料枠内で追加があるときだけ先頭に表示 */}
+                  {freeCount > 0 && <div>無料枠で追加完了：{freeCount}件</div>}
+                  <div>配信先の追加購入完了：{paidCount}件</div>
+                </div>
+              ) : (
+                // 追加購入が存在しない場合（従来通り）
+                <div>無料枠で追加完了：{freeCount}件</div>
+              )}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -1568,10 +1626,10 @@ function AddRecipientsModal({
                 閉じる
               </Button>
             </DialogClose>
-            {portalUrl ? (
+            {paidCount > 0 && portalUrl ? (
               <Button asChild>
                 <a href={portalUrl} target="_blank" rel="noopener noreferrer">
-                  ポータルを開く
+                  サブスクリプションを確認
                 </a>
               </Button>
             ) : null}
@@ -1694,9 +1752,9 @@ function EditRecipientModal({
       </DialogTrigger>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle className="text-xl font-bold">受信者を変更</DialogTitle>
+          <DialogTitle className="text-xl font-bold">配信先を変更</DialogTitle>
           <DialogDescription>
-            変更対象のメールを選び、新しいメールアドレスを入力してください。
+            変更対象を選択し、新しいメールアドレスを入力してください。
           </DialogDescription>
         </DialogHeader>
 
@@ -1717,7 +1775,7 @@ function EditRecipientModal({
                 <Label htmlFor="edit-target">変更するメール</Label>
                 <select
                   id="edit-target"
-                  className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full rounded-md border border-gray-300 bg-white px-3 pr-8 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   value={selectedEmail}
                   onChange={(e) => setSelectedEmail(e.target.value)}
                 >
@@ -1798,6 +1856,9 @@ function DeleteRecipientsModal({
   const [postDeleteOpen, setPostDeleteOpen] = useState(false);
   const [skipResetOnce, setSkipResetOnce] = useState(false);
   const [portalUrl, setPortalUrl] = useState<string>("");
+  // 完了モーダルに表示するための削除件数
+  const [deletedFreeCount, setDeletedFreeCount] = useState(0);
+  const [deletedPaidCount, setDeletedPaidCount] = useState(0);
   const [isCancellingSubscription, setIsCancellingSubscription] =
     useState(false);
 
@@ -1843,6 +1904,19 @@ function DeleteRecipientsModal({
 
   const handleCommitDelete = async () => {
     const emails = Array.from(selected);
+    // 今回削除する件数（無料/有料）を確定して保持
+    const selectedList = addonRecipients.filter((r) => selected.has(r.email));
+    const paidToDelete = selectedList.filter(
+      (r) => (r.created_via ?? "").toLowerCase() === "addon"
+    ).length;
+    const freeToDelete = selectedList.length - paidToDelete;
+
+    setDeletedPaidCount(paidToDelete);
+    setDeletedFreeCount(freeToDelete);
+    // 「すべての追加購入を削除＝サブスク自体キャンセル」フラグを確定
+    setIsCancellingSubscription(
+      paidToDelete > 0 && isDeletingAllAddonRecipients
+    );
     if (emails.length === 0) return;
     setPendingEmail("__batch__");
     setDeleting(true);
@@ -1892,11 +1966,10 @@ function DeleteRecipientsModal({
         <DialogContent>
           <DialogHeader>
             <DialogTitle className="text-xl font-bold">
-              受信者を削除
+              配信先を削除
             </DialogTitle>
             <DialogDescription>
-              削除する受信者を選択してください。すべての追加受信者を削除すると数量が
-              0 になります。
+              削除する配信先を選択してください。
             </DialogDescription>
           </DialogHeader>
 
@@ -1971,7 +2044,7 @@ function DeleteRecipientsModal({
               }}
               disabled={selected.size === 0 || Boolean(pendingEmail)}
             >
-              削除を実行
+              削除実行
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1988,16 +2061,48 @@ function DeleteRecipientsModal({
         <DialogContent>
           <DialogHeader>
             <DialogTitle className="text-lg font-bold">削除の確認</DialogTitle>
-            <DialogDescription className="mb-6">
-              {isDeletingAllAddonRecipients ? (
-                "すべての追加受信者を削除します。続行すると数量が 0 になります。"
-              ) : (
-                <>
-                  {selected.size} 件の受信者を削除します。
-                  <br />
-                  購読の追加数量も {selected.size} 減少します。
-                </>
-              )}
+            <DialogDescription className="mb-6 leading-relaxed">
+              {(() => {
+                // 今回選択された受信者の無料/有料の内訳
+                const selectedList = addonRecipients.filter((r) =>
+                  selected.has(r.email)
+                );
+                const paid = selectedList.filter(
+                  (r) => (r.created_via ?? "").toLowerCase() === "addon"
+                ).length;
+                const free = selectedList.length - paid;
+
+                // 1) 有料の削除が1件以上ある
+                if (paid > 0) {
+                  return (
+                    <div className="space-y-1">
+                      {/* 無料枠で追加分が含まれるときだけ先頭に表示 */}
+                      {free > 0 && (
+                        <div>
+                          無料枠で追加した {free} 件の配信先を削除します。
+                        </div>
+                      )}
+
+                      {isDeletingAllAddonRecipients ? (
+                        <div>
+                          追加購入した {paid}{" "}
+                          件の配信先を削除します。追加購入のサブスクリプションはキャンセルされます。
+                        </div>
+                      ) : (
+                        <div>
+                          追加購入した {paid}{" "}
+                          件の配信先を削除します。サブスクリプションの数量も更新されます。
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
+
+                // 2) 無料枠のみ削除
+                return (
+                  <div>無料枠で追加した {free} 件の配信先を削除します。</div>
+                );
+              })()}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="mt-2">
@@ -2031,10 +2136,34 @@ function DeleteRecipientsModal({
             <DialogTitle className="text-lg font-bold">
               削除が完了しました
             </DialogTitle>
-            <DialogDescription className="mb-6">
-              {isCancellingSubscription
-                ? "追加受信者が全て削除されたため、追加分の購読数量は 0 になりました。"
-                : "削除と数量の反映が完了しました。"}
+            <DialogDescription className="mb-6 leading-relaxed">
+              {deletedPaidCount > 0 ? (
+                <div className="space-y-1">
+                  {/* 無料枠の削除があれば先頭に表示 */}
+                  {deletedFreeCount > 0 && (
+                    <div>
+                      無料枠で追加した {deletedFreeCount}{" "}
+                      件の配信先を削除しました。
+                    </div>
+                  )}
+
+                  {isCancellingSubscription ? (
+                    <div>
+                      追加購入した {deletedPaidCount}{" "}
+                      件の配信先を削除しました。追加購入のサブスクリプションはキャンセルされました。
+                    </div>
+                  ) : (
+                    <div>
+                      追加購入した {deletedPaidCount}{" "}
+                      件の配信先を削除しました。サブスクリプションの数量も更新されました。
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div>
+                  無料枠で追加した {deletedFreeCount} 件の配信先を削除しました。
+                </div>
+              )}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -2050,10 +2179,10 @@ function DeleteRecipientsModal({
                 閉じる
               </Button>
             </DialogClose>
-            {portalUrl && (
+            {deletedPaidCount > 0 && portalUrl && (
               <Button asChild>
                 <a href={portalUrl} target="_blank" rel="noopener noreferrer">
-                  ポータルを開く
+                  サブスクリプションを確認
                 </a>
               </Button>
             )}
@@ -2080,18 +2209,31 @@ function formatCurrency(amount: number, currency?: string) {
   }
 }
 
+function formatDateJPLong(iso?: string) {
+  if (!iso) return "終了予定日未定";
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "終了予定日未定";
+    return new Intl.DateTimeFormat("ja-JP", {
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+    }).format(d);
+  } catch {
+    return "終了予定日未定";
+  }
+}
+
 function NoSubscription({ onReset }: { onReset?: () => void }) {
   return (
     <div className="space-y-4">
-      <p className="text-gray-700">
-        有効な購読がありません。トップからプランをご確認ください。
-      </p>
+      <p className="text-gray-700">有効なサブスクリプションがありません。</p>
       <Button asChild className="w-full">
-        <a href="/">トップへ戻る</a>
+        <a href="/">ランディングページに戻る</a>
       </Button>
       {onReset ? (
         <Button variant="outline" onClick={onReset} className="w-full">
-          メールを変えて再検索
+          メールアドレス入力に戻る
         </Button>
       ) : null}
     </div>

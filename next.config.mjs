@@ -13,7 +13,7 @@ const nextConfig = {
     return [
       {
         source: "/so/tr/:path*",
-        destination: "https://myanmar-news-alert.vercel.app/",
+        destination: "https://daily-mna.vercel.app/",
         permanent: false,
       },
     ];

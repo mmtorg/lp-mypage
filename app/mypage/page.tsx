@@ -882,11 +882,15 @@ function ResolvedView({
               プラン変更
             </h3>
             <div>
-              <Script async src="https://js.stripe.com/v3/pricing-table.js" />
+              <script
+                async
+                src="https://js.stripe.com/v3/pricing-table.js"
+              ></script>
               <stripe-pricing-table
-                pricing-table-id="prctbl_1SAk6HF6twdam0Y4fZYQNW30"
-                publishable-key="pk_test_51S5P4VF6twdam0Y43oSJhGvWBKOk2aWe1eWJQ0n3wLGhVuHkkuAMKSZr5jWqY3UXHcKC92rQ91h5O4rTXwF4umdr00tbXvEh7x"
-              />
+                pricing-table-id="prctbl_1SKADY5wfsh1mLQsvTAi9isM"
+                publishable-key="pk_test_51SEPyP5wfsh1mLQsYLJTHeQWuk8l9iaZgi9NuF81nQZ5b7aQT4THbMxA6Fy5EsKjXN06IaBUoTtGjO3wZirwY0to00PDQybv07"
+                customer-email={email}
+              ></stripe-pricing-table>
             </div>
           </section>
           <section className="space-y-4">

@@ -298,7 +298,7 @@ export default function MyPage() {
                   </Button>
                   <Button asChild variant="outline" className="w-full mt-2">
                     <a href={process.env.NEXT_PUBLIC_APP_URL || "/"}>
-                      トップへ戻る
+                      ランディングページに戻る
                     </a>
                   </Button>
                 </form>

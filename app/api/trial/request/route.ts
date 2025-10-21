@@ -297,6 +297,8 @@ export async function POST(req: NextRequest) {
           customer: customer.id,
           items: [{ price: priceId }],
           trial_period_days: TRIAL_DAYS,
+          // 無料トライアル終了時に自動解約（現在の期間末で解約）
+          cancel_at_period_end: true,
           metadata: { plan: "trial", initiated_via: "api" },
         },
         { idempotencyKey: baseKey }
@@ -311,6 +313,7 @@ export async function POST(req: NextRequest) {
           customer: customer.id,
           items: [{ price: priceId }],
           trial_period_days: TRIAL_DAYS,
+          cancel_at_period_end: true,
           metadata: { plan: "trial", initiated_via: "api" },
         },
         { idempotencyKey: retryKey }
@@ -325,6 +328,7 @@ export async function POST(req: NextRequest) {
             customer: (customer as any).id,
             items: [{ price: priceId }],
             trial_period_days: TRIAL_DAYS,
+            cancel_at_period_end: true,
             metadata: { plan: "trial", initiated_via: "api:retry" },
           },
           { idempotencyKey: `trial-subscription:${email.trim().toLowerCase()}:${productId}:${Date.now()}` }
@@ -337,6 +341,7 @@ export async function POST(req: NextRequest) {
           customer: (customer as any).id,
           items: [{ price: priceId }],
           trial_period_days: TRIAL_DAYS,
+          cancel_at_period_end: true,
           metadata: { plan: "trial", initiated_via: "api:retry" },
         },
         { idempotencyKey: `trial-subscription:${email.trim().toLowerCase()}:${productId}:${Date.now()}` }

@@ -12,7 +12,7 @@ const nextConfig = {
   async redirects() {
     return [
       {
-        source: "/so/tr/:path*",
+        source: "/tr/:path*",
         destination: "https://daily-mna.vercel.app/",
         permanent: false,
       },

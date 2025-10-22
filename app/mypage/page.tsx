@@ -250,7 +250,7 @@ export default function MyPage() {
               <CardContent>
                 <div className="flex items-center justify-center py-6 text-gray-600">
                   <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                  少々お待ちください
+                  Loading
                 </div>
               </CardContent>
             </Card>
@@ -1167,6 +1167,19 @@ function AddRecipientsModal({
     [emails]
   );
 
+  // メール形式チェック（簡易）
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const hasInvalidFormat = useMemo(() => {
+    // 全行入力必須（normalizedNewEmails.length === count）を前提に
+    // 入力済みの各メールが形式に一致するかを判定
+    return emails
+      .map((v) => v.trim())
+      .filter(Boolean)
+      .some((v) => !emailRegex.test(v));
+  }, [emails]);
+
+  // 各行の無効判定（UI表示用）は都度計算するため配列化は不要
+
   const hasExistingDuplicate = normalizedNewEmails.some((v) =>
     normalizedExisting.has(v)
   );
@@ -1201,6 +1214,7 @@ function AddRecipientsModal({
     normalizedNewEmails.length === count &&
     !hasExistingDuplicate &&
     !hasInternalDuplicate &&
+    !hasInvalidFormat &&
     !saving &&
     !prechecking;
 
@@ -1432,30 +1446,46 @@ function AddRecipientsModal({
             {/* 入力フォーム */}
             <div className="space-y-3 mt-4">
               <Label>メールアドレス</Label>
-              {emails.map((value, index) => (
-                <div key={index} className="flex items-center gap-2">
-                  <Input
-                    type="email"
-                    required
-                    value={value}
-                    onChange={(e) => updateEmail(index, e.target.value)}
-                    placeholder={`example${index + 1}@email.com`}
-                    disabled={prechecking || saving}
-                    className="flex-1"
-                  />
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => removeEmailAt(index)}
-                    disabled={prechecking || saving || emails.length <= 1}
-                    aria-label={`行${index + 1}を削除`}
-                    title="この行を削除"
-                  >
-                    ×
-                  </Button>
-                </div>
-              ))}
+              {emails.map((value, index) => {
+                const trimmed = (value || "").trim();
+                const showInvalid = !!trimmed && !emailRegex.test(trimmed);
+                return (
+                  <div key={index}>
+                    <div className="flex items-center gap-2">
+                      <Input
+                        type="email"
+                        required
+                        value={value}
+                        onChange={(e) => updateEmail(index, e.target.value)}
+                        placeholder={`example${index + 1}@email.com`}
+                        disabled={prechecking || saving}
+                        className={`flex-1 ${
+                          showInvalid
+                            ? "border-red-500 focus-visible:ring-red-500 placeholder:text-red-400"
+                            : ""
+                        }`}
+                        aria-invalid={showInvalid}
+                      />
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => removeEmailAt(index)}
+                        disabled={prechecking || saving || emails.length <= 1}
+                        aria-label={`行${index + 1}を削除`}
+                        title="この行を削除"
+                      >
+                        ×
+                      </Button>
+                    </div>
+                    {showInvalid && (
+                      <p className="mt-1 text-xs text-red-600">
+                        メールアドレスの形式が正しくありません。
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
 
               <div className="flex items-center gap-2 pt-1">
                 <Button
@@ -1477,6 +1507,7 @@ function AddRecipientsModal({
                   メールアドレスが重複しています。
                 </div>
               )}
+              {/* 入力全体の形式エラーは行単位の表示に統一するため非表示 */}
               {error && (
                 <div className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-600">
                   {error}

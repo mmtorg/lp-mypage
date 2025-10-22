@@ -103,15 +103,23 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // Used slots = number of recipients for the parent subscriptions (exclude pending_removal)
+    // Used slots = owner(1) + number of active recipients (exclude pending_removal)
+    // 契約者本人も配信先に含まれる仕様。
+    // ただし recipient_emails に既に契約者が含まれている場合は二重計上しない。
     let usedSlots = 0;
     if (parentIds.length > 0) {
       try {
         const { data: recs } = await supabaseAdmin
           .from("recipient_emails")
-          .select("id, pending_removal")
+          .select("id, email, pending_removal")
           .in("user_stripe_id", parentIds);
-        usedSlots = (recs ?? []).filter((r: any) => !r?.pending_removal).length;
+        const active = (recs ?? []).filter((r: any) => !r?.pending_removal);
+        const activeCount = active.length;
+        const hasOwner = active.some(
+          (r: any) => String(r?.email || "").toLowerCase() === email.toLowerCase()
+        );
+        const ownerCount = plan === "lite" || plan === "business" ? (hasOwner ? 0 : 1) : 0;
+        usedSlots = ownerCount + activeCount;
       } catch {}
     }
 

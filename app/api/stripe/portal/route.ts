@@ -9,17 +9,40 @@ export async function POST(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const qpEmail = searchParams.get("email");
+    const qpPortal = searchParams.get("portal");
 
     // 既存互換: JSON body から return_url, email を受け取り可能
     let returnUrl: string | undefined;
     let emailFromBody: string | undefined;
+    let portalFromBody: string | undefined;
     try {
       const body = await request.json();
       returnUrl = body?.return_url as string | undefined;
       emailFromBody = body?.email as string | undefined;
+      // optional: which portal configuration to use ("change"|"cancel"|"billing")
+      if (typeof body?.portal === "string") {
+        portalFromBody = String(body.portal).toLowerCase();
+      }
     } catch {}
 
     const email = qpEmail || emailFromBody || undefined;
+    // decide portal purpose
+    const rawPurpose = (qpPortal || portalFromBody || "billing").toLowerCase();
+    const portalPurpose = ["change", "cancel", "billing"].includes(rawPurpose)
+      ? rawPurpose
+      : "billing";
+
+    const resolvePortalConfigId = (purpose: string): string | undefined => {
+      switch (purpose) {
+        case "change":
+          return process.env.STRIPE_PORTAL_CONFIG_CHANGE;
+        case "cancel":
+          return process.env.STRIPE_PORTAL_CONFIG_CANCEL;
+        case "billing":
+        default:
+          return process.env.STRIPE_PORTAL_CONFIG_BILLING;
+      }
+    };
 
     // 顧客ID取得（email ベース）
     let stripeCustomerId: string | undefined;
@@ -84,9 +107,11 @@ export async function POST(request: NextRequest) {
       process.env.NEXT_PUBLIC_BASE_URL ||
       "https://your-app.example"
     }/mypage`;
+    const configurationId = resolvePortalConfigId(portalPurpose);
     const session = await stripe.billingPortal.sessions.create({
       customer: stripeCustomerId,
       return_url: returnUrl || defaultReturn,
+      ...(configurationId ? { configuration: configurationId } : {}),
     });
 
     return NextResponse.json({ url: session.url });

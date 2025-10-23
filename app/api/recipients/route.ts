@@ -607,12 +607,26 @@ async function adjustStripeForDeletion(
           nextQty,
         });
       } else {
-        // Always just delete the addon item, never cancel the whole subscription from here.
-        await stripe.subscriptionItems.del(addonItem.id);
-        console.log(
-          "[recipients:DELETE] removed addon item from subscription as quantity is zero",
-          { subId }
-        );
+        // nextQty === 0 の場合:
+        // 1) サブスクがアドオン専用（= ベース商品が存在しない、または唯一のアイテムがアドオン）の場合は、サブスクリプション自体をキャンセル
+        // 2) ベース商品が存在する場合は、アドオン item のみ削除
+        const items: any[] = Array.isArray(sub?.items?.data) ? sub.items.data : [];
+        const hasBaseItem = items.some((it: any) => !ADDON_PRICE_IDS.has(it?.price?.id));
+        const isAddonOnlySubscription = items.length === 1 && items[0]?.id === addonItem.id;
+
+        if (!hasBaseItem && isAddonOnlySubscription) {
+          await stripe.subscriptions.cancel(subId);
+          console.log(
+            "[recipients:DELETE] canceled add-on only subscription (no base items)",
+            { subId }
+          );
+        } else {
+          await stripe.subscriptionItems.del(addonItem.id);
+          console.log(
+            "[recipients:DELETE] removed addon item from subscription as quantity is zero",
+            { subId }
+          );
+        }
       }
     } catch (e) {
       console.warn(

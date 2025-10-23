@@ -1054,23 +1054,31 @@ function ResolvedView({
           <h3 className="border-b border-gray-200 pb-2 text-xl font-semibold text-gray-900">
             サブスクリプションの管理
           </h3>
-          <div className="space-y-2 rounded-md bg-gray-50 p-4 text-sm text-gray-600">
-            <ul className="list-disc pl-5 space-y-1">
-              <li>
-                サブスクリプションの解約
-                <ul className="list-none">
-                  <li>
-                    プラン変更をご希望の場合は、一度現在のサブスクリプションを解約し、
-                    新しいプランを購入してください。
-                  </li>
-                </ul>
-              </li>
-              <li>請求書・領収書ダウンロード</li>
-              <li>請求履歴の確認</li>
-              <li>請求先情報の確認・更新</li>
-            </ul>
+          <p className="text-sm text-gray-600">
+            プラン変更時には契約者以外のメール配信先が削除されます。
+          </p>
+
+          {/* 「配信先の管理」と同じレイアウト + ボタン反転カラー */}
+          <div className="grid gap-2 sm:grid-cols-3">
+            {/* プラン変更 */}
+            <div className="w-full">
+              <PortalButton email={email} mode="change" label="プラン変更" />
+            </div>
+
+            {/* プラン解約 */}
+            <div className="w-full">
+              <PortalButton email={email} mode="cancel" label="プラン解約" />
+            </div>
+
+            {/* 請求・決済情報 */}
+            <div className="w-full">
+              <PortalButton
+                email={email}
+                mode="billing"
+                label="請求・決済情報"
+              />
+            </div>
           </div>
-          <PortalButton email={email} />
         </section>
       </CardContent>
     </Card>
@@ -1564,7 +1572,7 @@ function AddRecipientsModal({
                   )}
                   <div>配信先追加購入：{payableCountPlanned}件</div>
                   <div>
-                    追加購入金額：
+                    追加購入金額 (消費税10%込)：
                     {formatCurrency(
                       (unitAmount || 0) * payableCountPlanned,
                       currency
@@ -2262,10 +2270,7 @@ function formatDateJPLong(iso?: string) {
 function NoSubscription({ onReset }: { onReset?: () => void }) {
   return (
     <div className="space-y-4">
-      <p className="text-gray-700">有効なサブスクリプションがありません。</p>
-      <Button asChild className="w-full">
-        <a href="/">ランディングページに戻る</a>
-      </Button>
+      <p className="text-gray-700">有料プランの契約がありません。</p>
       {onReset ? (
         <Button variant="outline" onClick={onReset} className="w-full">
           メールアドレス入力に戻る

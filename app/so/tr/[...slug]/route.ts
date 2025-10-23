@@ -11,7 +11,7 @@ function decodeBase64Url(b64url: string) {
   }
 }
 
-const FALLBACK = "https://daily-mna.vercel.app/";
+const FALLBACK = "https://so.daily-mna.com/";
 
 /**
  * Wix のクリック計測URL例:

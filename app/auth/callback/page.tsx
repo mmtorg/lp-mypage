@@ -13,8 +13,10 @@ const SESSION_EMAIL_KEY = "mypage:lastEmail:session";
 function AuthCallbackComponent() {
   const router = useRouter();
   const params = useSearchParams();
-  const [mode, setMode] = useState<"loading" | "recovery" | "done" | "error">("loading");
-  const [message, setMessage] = useState<string>("処理中...");
+  const [mode, setMode] = useState<"loading" | "recovery" | "done" | "error">(
+    "loading"
+  );
+  const [message, setMessage] = useState<string>("Loading...");
   const [pw1, setPw1] = useState("");
   const [pw2, setPw2] = useState("");
   const [busy, setBusy] = useState(false);
@@ -32,7 +34,8 @@ function AuthCallbackComponent() {
   const isRecovery = useMemo(() => {
     try {
       return (
-        (typeof window !== "undefined" && window.location.hash.includes("type=recovery")) ||
+        (typeof window !== "undefined" &&
+          window.location.hash.includes("type=recovery")) ||
         params.get("type") === "recovery"
       );
     } catch {
@@ -59,14 +62,21 @@ function AuthCallbackComponent() {
         const { data: userRes } = await supabase.auth.getUser();
         const email = userRes.user?.email ?? "";
         if (email) {
-          try { sessionStorage.setItem(SESSION_EMAIL_KEY, email); } catch {}
+          try {
+            sessionStorage.setItem(SESSION_EMAIL_KEY, email);
+          } catch {}
         }
         setMode("done");
         setMessage("サインインが完了しました。マイページへ移動します...");
-        timeoutRef.current = window.setTimeout(() => router.replace("/mypage"), 600);
+        timeoutRef.current = window.setTimeout(
+          () => router.replace("/mypage"),
+          600
+        );
       } catch (e) {
         setMode("error");
-        setMessage("サインインの完了処理に失敗しました。マイページから再度お試しください。");
+        setMessage(
+          "サインインの完了処理に失敗しました。マイページから再度お試しください。"
+        );
       }
     };
     run();
@@ -80,7 +90,9 @@ function AuthCallbackComponent() {
       return;
     }
     if (!passwordRegex.test(pw1)) {
-      setErr("パスワードは8文字以上で、大文字、小文字、数字をそれぞれ1つ以上含める必要があります。");
+      setErr(
+        "パスワードは8文字以上で、大文字、小文字、数字をそれぞれ1つ以上含める必要があります。"
+      );
       return;
     }
     setBusy(true);
@@ -92,15 +104,18 @@ function AuthCallbackComponent() {
       const { data: userRes } = await supabase.auth.getUser();
       const email = userRes.user?.email ?? "";
       if (email) {
-        try { sessionStorage.setItem(SESSION_EMAIL_KEY, email); } catch {}
+        try {
+          sessionStorage.setItem(SESSION_EMAIL_KEY, email);
+        } catch {}
       }
       setMode("done");
       setMessage("パスワードを更新しました。マイページへ移動します...");
-      timeoutRef.current = window.setTimeout(() => router.replace("/mypage"), 600);
-    } catch (e) {
-      setErr(
-        e instanceof Error ? e.message : "パスワードの更新に失敗しました"
+      timeoutRef.current = window.setTimeout(
+        () => router.replace("/mypage"),
+        600
       );
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "パスワードの更新に失敗しました");
       setBusy(false);
     }
   };
@@ -112,16 +127,37 @@ function AuthCallbackComponent() {
           <h1 className="text-lg font-semibold">パスワードを再設定</h1>
           <div className="space-y-2">
             <Label htmlFor="pw1">新しいパスワード</Label>
-            <Input id="pw1" type="password" value={pw1} onChange={(e) => setPw1(e.target.value)} disabled={busy} />
+            <Input
+              id="pw1"
+              type="password"
+              value={pw1}
+              onChange={(e) => setPw1(e.target.value)}
+              disabled={busy}
+            />
           </div>
           <div className="space-y-2">
             <Label htmlFor="pw2">新しいパスワード（確認）</Label>
-            <Input id="pw2" type="password" value={pw2} onChange={(e) => setPw2(e.target.value)} disabled={busy} />
+            <Input
+              id="pw2"
+              type="password"
+              value={pw2}
+              onChange={(e) => setPw2(e.target.value)}
+              disabled={busy}
+            />
           </div>
-          <p className="text-sm text-gray-500">パスワードは8文字以上で、大文字、小文字、数字をそれぞれ1つ以上含める必要があります。</p>
-          {err && <div className="rounded-lg bg-red-50 p-3 text-sm text-red-600">{err}</div>}
+          <p className="text-sm text-gray-500">
+            パスワードは8文字以上で、大文字、小文字、数字をそれぞれ1つ以上含める必要があります。
+          </p>
+          {err && (
+            <div className="rounded-lg bg-red-50 p-3 text-sm text-red-600">
+              {err}
+            </div>
+          )}
           <div className="flex justify-end">
-            <Button onClick={submitRecovery} disabled={busy || !pw1 || pw1 !== pw2}>
+            <Button
+              onClick={submitRecovery}
+              disabled={busy || !pw1 || pw1 !== pw2}
+            >
               {busy ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" /> 更新中...
@@ -147,7 +183,15 @@ function AuthCallbackComponent() {
 
 export default function AuthCallbackPage() {
   return (
-    <Suspense fallback={<div className="min-h-screen flex items-center justify-center p-6"><div className="rounded-xl border bg-white shadow p-6 text-center text-sm text-gray-700">処理中...</div></div>}>
+    <Suspense
+      fallback={
+        <div className="min-h-screen flex items-center justify-center p-6">
+          <div className="rounded-xl border bg-white shadow p-6 text-center text-sm text-gray-700">
+            Loading...
+          </div>
+        </div>
+      }
+    >
       <AuthCallbackComponent />
     </Suspense>
   );

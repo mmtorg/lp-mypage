@@ -246,7 +246,7 @@ export default function TrialStartPage() {
   return (
     <main className="mx-auto max-w-lg p-6 text-center">
       <h1 className="text-xl font-bold mb-4">無料トライアル</h1>
-      {status === "processing" && <p>処理中です...</p>}
+      {status === "processing" && <p>Loading...</p>}
       {status === "error" && (
         <p>エラーが発生しました。{detail && <span>{detail}</span>}</p>
       )}

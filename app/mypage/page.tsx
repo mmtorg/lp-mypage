@@ -117,9 +117,11 @@ export default function MyPage() {
         setRecipLimits(null);
       }
 
-      // 認証チェック
+      // 認証チェック: 有料プラン(Lite/Business)のみ認証フローへ
       try {
-        if (data.current_plan || data.is_trialing) {
+        const hasPaidPlan =
+          data.current_plan === "lite" || data.current_plan === "business";
+        if (hasPaidPlan) {
           const supabase = getSupabaseBrowser();
           const { data: sessionRes } = await supabase.auth.getUser();
           const authedEmail = sessionRes.user?.email?.toLowerCase();
@@ -190,7 +192,9 @@ export default function MyPage() {
       setSub(data);
 
       try {
-        if (data.current_plan || data.is_trialing) {
+        const hasPaidPlan =
+          data.current_plan === "lite" || data.current_plan === "business";
+        if (hasPaidPlan) {
           const supabase = getSupabaseBrowser();
           const { data: sessionRes } = await supabase.auth.getUser();
           const authedEmail = sessionRes.user?.email?.toLowerCase();
@@ -233,9 +237,6 @@ export default function MyPage() {
       >
         <div className="mb-8 text-center">
           <h1 className="mb-2 text-3xl font-bold text-gray-900">マイページ</h1>
-          <p className="text-gray-600">
-            現在のサブスクリプションを確認できます
-          </p>
         </div>
 
         {!sub &&
@@ -257,15 +258,11 @@ export default function MyPage() {
           ) : (
             <Card className="mb-6 rounded-2xl border-0 shadow-md">
               <CardHeader>
-                <CardTitle className="text-xl">メールで確認</CardTitle>
-                <CardDescription>
-                  メールアドレスを入力して確認してください。
-                </CardDescription>
+                <CardTitle className="text-xl">メールアドレスを入力</CardTitle>
               </CardHeader>
               <CardContent>
                 <form onSubmit={handleCheck} className="space-y-4">
                   <div className="space-y-2">
-                    <Label htmlFor="email">メールアドレス</Label>
                     <Input
                       id="email"
                       type="email"
@@ -290,191 +287,203 @@ export default function MyPage() {
                     {loading ? (
                       <>
                         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        検索中...
+                        Loading...
                       </>
                     ) : (
-                      "サブスクリプションを確認"
+                      "購入中の有料プランを確認"
                     )}
-                  </Button>
-                  <Button asChild variant="outline" className="w-full mt-2">
-                    <a href={process.env.NEXT_PUBLIC_APP_URL || "/"}>
-                      ランディングページに戻る
-                    </a>
                   </Button>
                 </form>
               </CardContent>
             </Card>
           ))}
 
-        {sub && isAuthed && (sub.current_plan || sub.is_trialing) && (
-          <ResolvedView
-            email={sub.email || email}
-            plan={sub.current_plan}
-            productName={sub.product_name}
-            unitAmount={sub.unit_amount}
-            currency={sub.currency}
-            billingInterval={sub.billing_interval ?? undefined}
-            recipients={sub.recipients}
-            purchasedItems={sub.purchased_items}
-            isTrialing={sub.is_trialing}
-            trialEndsAt={sub.trial_ends_at}
-            onRefetch={refreshByEmail}
-            onLogout={async () => {
-              const supabase = getSupabaseBrowser();
-              await supabase.auth.signOut();
-              try {
-                sessionStorage.removeItem(SESSION_EMAIL_KEY);
-              } catch {}
-              setIsAuthed(false);
-              setAuthStage(null);
-              setSub(null);
-              setPassword("");
-            }}
-            recipLimits={recipLimits}
-          />
-        )}
-
-        {sub && !isAuthed && (sub.current_plan || sub.is_trialing) && (
-          <div className="mx-auto max-w-2xl">
-            <AuthGate
-              stage={authStage}
-              busy={authBusy}
-              error={authError}
+        {sub &&
+          isAuthed &&
+          (sub.current_plan === "lite" || sub.current_plan === "business") && (
+            <ResolvedView
               email={sub.email || email}
-              password={password}
-              password2={password2}
-              onChangePassword={setPassword}
-              onChangePassword2={setPassword2}
-              onReset={() => {
-                setSub(null);
+              plan={sub.current_plan}
+              productName={sub.product_name}
+              unitAmount={sub.unit_amount}
+              currency={sub.currency}
+              billingInterval={sub.billing_interval ?? undefined}
+              recipients={sub.recipients}
+              purchasedItems={sub.purchased_items}
+              isTrialing={sub.is_trialing}
+              trialEndsAt={sub.trial_ends_at}
+              onRefetch={refreshByEmail}
+              onLogout={async () => {
+                const supabase = getSupabaseBrowser();
+                await supabase.auth.signOut();
+                try {
+                  sessionStorage.removeItem(SESSION_EMAIL_KEY);
+                } catch {}
+                setIsAuthed(false);
                 setAuthStage(null);
+                setSub(null);
                 setPassword("");
-                setPassword2("");
-                setAuthError(null);
               }}
-              onLogin={async () => {
-                setAuthError(null);
-                setAuthBusy(true);
-                try {
-                  const supabase = getSupabaseBrowser();
-                  const { error } = await supabase.auth.signInWithPassword({
-                    email: (sub.email || email).trim(),
-                    password,
-                  });
-                  if (error) throw error;
-                  const { data: me } = await supabase.auth.getUser();
-                  const authedEmail = me.user?.email?.toLowerCase();
-                  if (
-                    authedEmail &&
-                    authedEmail === (sub.email || email).trim().toLowerCase()
-                  ) {
-                    setIsAuthed(true);
-                    setAuthStage(null);
-                    await refreshByEmail(sub.email || email);
-                  } else {
-                    setAuthError(
-                      "ログインしたユーザーのメールが一致しません。"
-                    );
-                  }
-                } catch (err) {
-                  setAuthError(
-                    err instanceof Error
-                      ? err.message
-                      : "ログインに失敗しました。"
-                  );
-                } finally {
-                  setAuthBusy(false);
-                }
-              }}
-              onRegister={async () => {
-                const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/;
-                if (!password || password !== password2) {
-                  setAuthError("パスワードが一致しません。");
-                  return;
-                }
-                if (!passwordRegex.test(password)) {
-                  setAuthError(
-                    "パスワードは8文字以上・大小英字と数字を各1文字以上含めてください。"
-                  );
-                  return;
-                }
-                setAuthError(null);
-                setAuthBusy(true);
-                try {
-                  const supabase = getSupabaseBrowser();
-                  let origin =
-                    process.env.NEXT_PUBLIC_APP_URL ||
-                    (typeof window !== "undefined"
-                      ? window.location.origin
-                      : undefined);
-                  try {
-                    if (origin) origin = new URL(origin).origin;
-                  } catch {}
-                  const { error } = await supabase.auth.signUp({
-                    email: (sub.email || email).trim(),
-                    password,
-                    options: origin
-                      ? { emailRedirectTo: `${origin}/auth/callback` }
-                      : undefined,
-                  });
-                  if (error) throw error;
-                  setAuthStage("emailSent");
-                } catch (err) {
-                  setAuthError(
-                    err instanceof Error ? err.message : "登録に失敗しました。"
-                  );
-                } finally {
-                  setAuthBusy(false);
-                }
-              }}
-              onForgot={async () => {
-                setAuthError(null);
-                setAuthBusy(true);
-                try {
-                  const supabase = getSupabaseBrowser();
-                  let origin =
-                    process.env.NEXT_PUBLIC_APP_URL ||
-                    (typeof window !== "undefined"
-                      ? window.location.origin
-                      : undefined);
-                  try {
-                    if (origin) origin = new URL(origin).origin;
-                  } catch {}
-                  const { error } = await supabase.auth.resetPasswordForEmail(
-                    (sub.email || email).trim(),
-                    origin
-                      ? { redirectTo: `${origin}/auth/callback` }
-                      : undefined
-                  );
-                  if (error) throw error;
-                  setAuthStage("emailSent");
-                } catch (err) {
-                  setAuthError(
-                    err instanceof Error
-                      ? err.message
-                      : "パスワードリセットに失敗しました。"
-                  );
-                } finally {
-                  setAuthBusy(false);
-                }
-              }}
+              recipLimits={recipLimits}
             />
-          </div>
-        )}
+          )}
 
-        {sub && !sub.current_plan && !sub.is_trialing && (
-          <Card className="rounded-2xl border-0 shadow-md">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-xl">
-                有効なサブスクリプションが見つかりませんでした
-              </CardTitle>
-              <CardDescription>{sub.email || email}</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <NoSubscription onReset={() => setSub(null)} />
-            </CardContent>
-          </Card>
-        )}
+        {sub &&
+          !isAuthed &&
+          (sub.current_plan === "lite" || sub.current_plan === "business") && (
+            <div className="mx-auto max-w-2xl">
+              <AuthGate
+                stage={authStage}
+                busy={authBusy}
+                error={authError}
+                email={sub.email || email}
+                password={password}
+                password2={password2}
+                onChangePassword={setPassword}
+                onChangePassword2={setPassword2}
+                onReset={() => {
+                  setSub(null);
+                  setAuthStage(null);
+                  setPassword("");
+                  setPassword2("");
+                  setAuthError(null);
+                }}
+                onLogin={async () => {
+                  setAuthError(null);
+                  setAuthBusy(true);
+                  try {
+                    const supabase = getSupabaseBrowser();
+                    const { error } = await supabase.auth.signInWithPassword({
+                      email: (sub.email || email).trim(),
+                      password,
+                    });
+                    if (error) throw error;
+                    const { data: me } = await supabase.auth.getUser();
+                    const authedEmail = me.user?.email?.toLowerCase();
+                    if (
+                      authedEmail &&
+                      authedEmail === (sub.email || email).trim().toLowerCase()
+                    ) {
+                      setIsAuthed(true);
+                      setAuthStage(null);
+                      await refreshByEmail(sub.email || email);
+                    } else {
+                      setAuthError(
+                        "ログインしたユーザーのメールが一致しません。"
+                      );
+                    }
+                  } catch (err) {
+                    setAuthError(
+                      err instanceof Error
+                        ? err.message
+                        : "ログインに失敗しました。"
+                    );
+                  } finally {
+                    setAuthBusy(false);
+                  }
+                }}
+                onRegister={async () => {
+                  const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/;
+                  if (!password || password !== password2) {
+                    setAuthError("パスワードが一致しません。");
+                    return;
+                  }
+                  if (!passwordRegex.test(password)) {
+                    setAuthError(
+                      "パスワードは8文字以上・大小英字と数字を各1文字以上含めてください。"
+                    );
+                    return;
+                  }
+                  setAuthError(null);
+                  setAuthBusy(true);
+                  try {
+                    const supabase = getSupabaseBrowser();
+                    let origin =
+                      process.env.NEXT_PUBLIC_APP_URL ||
+                      (typeof window !== "undefined"
+                        ? window.location.origin
+                        : undefined);
+                    try {
+                      if (origin) origin = new URL(origin).origin;
+                    } catch {}
+                    const { error } = await supabase.auth.signUp({
+                      email: (sub.email || email).trim(),
+                      password,
+                      options: origin
+                        ? { emailRedirectTo: `${origin}/auth/callback` }
+                        : undefined,
+                    });
+                    if (error) throw error;
+                    setAuthStage("emailSent");
+                  } catch (err) {
+                    setAuthError(
+                      err instanceof Error
+                        ? err.message
+                        : "登録に失敗しました。"
+                    );
+                  } finally {
+                    setAuthBusy(false);
+                  }
+                }}
+                onForgot={async () => {
+                  setAuthError(null);
+                  setAuthBusy(true);
+                  try {
+                    const supabase = getSupabaseBrowser();
+                    let origin =
+                      process.env.NEXT_PUBLIC_APP_URL ||
+                      (typeof window !== "undefined"
+                        ? window.location.origin
+                        : undefined);
+                    try {
+                      if (origin) origin = new URL(origin).origin;
+                    } catch {}
+                    const { error } = await supabase.auth.resetPasswordForEmail(
+                      (sub.email || email).trim(),
+                      origin
+                        ? { redirectTo: `${origin}/auth/callback` }
+                        : undefined
+                    );
+                    if (error) throw error;
+                    setAuthStage("emailSent");
+                  } catch (err) {
+                    setAuthError(
+                      err instanceof Error
+                        ? err.message
+                        : "パスワードリセットに失敗しました。"
+                    );
+                  } finally {
+                    setAuthBusy(false);
+                  }
+                }}
+              />
+            </div>
+          )}
+
+        {sub &&
+          !(sub.current_plan === "lite" || sub.current_plan === "business") && (
+            <div className="mx-auto max-w-2xl">
+              <Card className="rounded-2xl border-0 shadow-md">
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-xl">
+                    購入中の有料プランがありません。
+                  </CardTitle>
+                  <CardDescription>{sub.email || email}</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-4">
+                    <Button
+                      variant="outline"
+                      onClick={() => setSub(null)}
+                      className="w-full"
+                    >
+                      メールアドレス入力に戻る
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          )}
       </div>
     </div>
   );
@@ -512,16 +521,18 @@ function AuthGate({
   onReset,
 }: AuthGateProps) {
   const [showPassword, setShowPassword] = useState(false);
+  const [showPasswordReg1, setShowPasswordReg1] = useState(false);
+  const [showPasswordReg2, setShowPasswordReg2] = useState(false);
   const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/;
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
   if (stage === "emailSent") {
     return (
       <Card className="rounded-2xl border-0 shadow-md">
         <CardHeader>
-          <CardTitle className="text-xl">確認メールを送信しました</CardTitle>
+          <CardTitle className="text-xl">認証メールを送信しました</CardTitle>
           <CardDescription>
-            {email}{" "}
-            宛に確認メールを送信しました。メール内のリンクから手続きを行ってください。
+            {email} 宛に認証メールを送信しました。
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -536,6 +547,9 @@ function AuthGate({
   }
 
   if (stage === "register") {
+    const isValidPassword = passwordRegex.test(password);
+    const passwordsMatch = password && password2 && password === password2; // ← 追加
+
     return (
       <Card className="rounded-2xl border-0 shadow-md">
         <CardHeader>
@@ -546,56 +560,76 @@ function AuthGate({
         </CardHeader>
         <CardContent>
           <div className="space-y-4">
+            {/* パスワード */}
             <div className="space-y-2">
               <Label htmlFor="pw1">パスワード</Label>
               <div className="relative">
                 <Input
                   id="pw1"
-                  type={showPassword ? "text" : "password"}
+                  type={showPasswordReg1 ? "text" : "password"}
                   value={password}
                   onChange={(e) => onChangePassword(e.target.value)}
                   disabled={busy}
                   className="pr-10"
                 />
+
                 <Button
                   type="button"
                   variant="ghost"
                   size="sm"
                   className="absolute inset-y-0 right-0 flex items-center px-3"
-                  onClick={() => setShowPassword((prev) => !prev)}
+                  onClick={() => setShowPasswordReg1((prev) => !prev)}
                   disabled={busy}
                 >
-                  {showPassword ? (
+                  {showPasswordReg1 ? (
                     <EyeOff className="h-4 w-4 text-gray-500" />
                   ) : (
                     <Eye className="h-4 w-4 text-gray-500" />
                   )}
                 </Button>
               </div>
-              <p className="text-sm text-gray-500">
-                パスワードは8文字以上で、大小英字・数字を各1文字以上含めてください。
-              </p>
             </div>
+
+            {/* ▼ 追加：バリデーション内容の可視化 */}
+            <div
+              className="rounded-md bg-gray-50 p-3 text-sm"
+              role="status"
+              aria-live="polite"
+            >
+              <ul className="space-y-1">
+                <li
+                  className={
+                    isValidPassword ? "text-green-700" : "text-red-700"
+                  }
+                >
+                  {isValidPassword ? "✓" : "✗"}{" "}
+                  パスワードは8文字以上・大小英字と数字を各1文字以上含む
+                </li>
+              </ul>
+            </div>
+
+            {/* パスワード確認 */}
             <div className="space-y-2">
               <Label htmlFor="pw2">パスワード（確認）</Label>
               <div className="relative">
                 <Input
                   id="pw2"
-                  type={showPassword ? "text" : "password"}
+                  type={showPasswordReg2 ? "text" : "password"}
                   value={password2}
                   onChange={(e) => onChangePassword2(e.target.value)}
                   disabled={busy}
                   className="pr-10"
                 />
+
                 <Button
                   type="button"
                   variant="ghost"
                   size="sm"
                   className="absolute inset-y-0 right-0 flex items-center px-3"
-                  onClick={() => setShowPassword((prev) => !prev)}
+                  onClick={() => setShowPasswordReg2((prev) => !prev)}
                   disabled={busy}
                 >
-                  {showPassword ? (
+                  {showPasswordReg2 ? (
                     <EyeOff className="h-4 w-4 text-gray-500" />
                   ) : (
                     <Eye className="h-4 w-4 text-gray-500" />
@@ -603,11 +637,19 @@ function AuthGate({
                 </Button>
               </div>
             </div>
+
+            {/* ▼ 追加：一致チェック */}
+            {!passwordsMatch && password2 && (
+              <p className="text-sm text-red-600">パスワードが一致しません。</p>
+            )}
+
             {error && (
               <div className="rounded-lg bg-red-50 p-3 text-sm text-red-600">
                 {error}
               </div>
             )}
+
+            {/* ボタン */}
             <div className="flex items-center justify-between">
               <Button variant="outline" onClick={onReset} disabled={busy}>
                 戻る
@@ -617,8 +659,9 @@ function AuthGate({
                 disabled={
                   busy ||
                   !password ||
-                  password !== password2 ||
-                  !passwordRegex.test(password)
+                  !password2 ||
+                  !passwordsMatch ||
+                  !isValidPassword
                 }
               >
                 {busy ? (
@@ -637,18 +680,20 @@ function AuthGate({
   }
 
   if (stage === "login") {
+    const isValidEmail = emailRegex.test((email || "").trim());
+    const isValidPassword = passwordRegex.test(password);
+
     return (
       <Card className="rounded-2xl border-0 shadow-md">
         <CardHeader>
-          <CardTitle className="text-xl">ログイン</CardTitle>
-          <CardDescription>
-            {email} のパスワードを入力してください。
-          </CardDescription>
+          <CardTitle className="text-xl">
+            パスワードを入力してください
+          </CardTitle>
+          <CardDescription>{email}</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="password">パスワード</Label>
               <div className="relative">
                 <Input
                   id="password"
@@ -659,6 +704,7 @@ function AuthGate({
                   value={password}
                   onChange={(e) => onChangePassword(e.target.value)}
                   className="pr-10"
+                  aria-invalid={!isValidPassword}
                 />
                 <button
                   type="button"
@@ -676,16 +722,40 @@ function AuthGate({
                 </button>
               </div>
             </div>
+
+            {/* ▼ 追加：バリデーション内容の可視化 */}
+            <div
+              className="rounded-md bg-gray-50 p-3 text-sm"
+              role="status"
+              aria-live="polite"
+            >
+              <ul className="space-y-1">
+                <li
+                  className={
+                    isValidPassword ? "text-green-700" : "text-red-700"
+                  }
+                >
+                  {isValidPassword ? "✓" : "✗"}{" "}
+                  パスワードは8文字以上・大小英字と数字を各1文字以上含む
+                </li>
+              </ul>
+            </div>
+
             {error && (
               <div className="rounded-lg bg-red-50 p-3 text-sm text-red-600">
                 {error}
               </div>
             )}
+
             <div className="flex items-center justify-between">
               <Button variant="outline" onClick={onReset} disabled={busy}>
                 戻る
               </Button>
-              <Button onClick={onLogin} disabled={busy || !password}>
+              <Button
+                onClick={onLogin}
+                // ▼ 変更：メール形式とパスワード規則の両方を満たすまで無効化
+                disabled={busy || !isValidEmail || !isValidPassword}
+              >
                 {busy ? (
                   <>
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />{" "}
@@ -696,6 +766,7 @@ function AuthGate({
                 )}
               </Button>
             </div>
+
             <div className="text-right">
               <button
                 type="button"
@@ -1621,7 +1692,7 @@ function AddRecipientsModal({
               <Button onClick={performPurchase} disabled={saving}>
                 {saving ? (
                   <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" /> 処理中...
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading...
                   </>
                 ) : (
                   "確定"
@@ -2162,7 +2233,7 @@ function DeleteRecipientsModal({
             <Button onClick={handleCommitDelete} disabled={deleting}>
               {deleting ? (
                 <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" /> 処理中...
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading...
                 </>
               ) : (
                 "削除する"

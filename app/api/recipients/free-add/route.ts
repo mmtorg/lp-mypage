@@ -171,9 +171,7 @@ export async function POST(req: NextRequest) {
     const ADDON_PRICE_IDS = new Set(
       [
         process.env.STRIPE_ADDON_PRICE_ID_LITE_MONTHLY,
-        process.env.STRIPE_ADDON_PRICE_ID_LITE_YEARLY,
         process.env.STRIPE_ADDON_PRICE_ID_BUSINESS_MONTHLY,
-        process.env.STRIPE_ADDON_PRICE_ID_BUSINESS_YEARLY,
       ].filter((v): v is string => typeof v === "string" && !!v)
     );
 

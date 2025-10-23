@@ -34,18 +34,15 @@ export function getAddonPriceIdForPlan(
   plan: "lite" | "business",
   interval?: "month" | "year" | null
 ): string | undefined {
-  const isYearly = (interval || "month") === "year";
+  // 追加購入は月額に統一（ベースが年額でも月額のアドオンを使用）
   if (plan === "business") {
-    // Prefer split monthly/yearly, fallback to legacy single key
     const m = process.env.STRIPE_ADDON_PRICE_ID_BUSINESS_MONTHLY;
-    const y = process.env.STRIPE_ADDON_PRICE_ID_BUSINESS_YEARLY;
     const legacy = process.env.STRIPE_ADDON_PRICE_ID_BUSINESS;
-    return isYearly ? y || legacy || undefined : m || legacy || undefined;
+    return m || legacy || undefined;
   }
   const m = process.env.STRIPE_ADDON_PRICE_ID_LITE_MONTHLY;
-  const y = process.env.STRIPE_ADDON_PRICE_ID_LITE_YEARLY;
   const legacy = process.env.STRIPE_ADDON_PRICE_ID_LITE;
-  return isYearly ? y || legacy || undefined : m || legacy || undefined;
+  return m || legacy || undefined;
 }
 
 export function getAddonPriceIdForBasePriceId(
@@ -62,9 +59,9 @@ export function getAddonPriceIdForBasePriceId(
   const B_Y = process.env.STRIPE_PRICE_ID_BUSINESS_YEARLY || "";
 
   if (id === L_M) return process.env.STRIPE_ADDON_PRICE_ID_LITE_MONTHLY || process.env.STRIPE_ADDON_PRICE_ID_LITE || undefined;
-  if (id === L_Y) return process.env.STRIPE_ADDON_PRICE_ID_LITE_YEARLY || process.env.STRIPE_ADDON_PRICE_ID_LITE || undefined;
+  if (id === L_Y) return process.env.STRIPE_ADDON_PRICE_ID_LITE_MONTHLY || process.env.STRIPE_ADDON_PRICE_ID_LITE || undefined;
   if (id === B_M) return process.env.STRIPE_ADDON_PRICE_ID_BUSINESS_MONTHLY || process.env.STRIPE_ADDON_PRICE_ID_BUSINESS || undefined;
-  if (id === B_Y) return process.env.STRIPE_ADDON_PRICE_ID_BUSINESS_YEARLY || process.env.STRIPE_ADDON_PRICE_ID_BUSINESS || undefined;
+  if (id === B_Y) return process.env.STRIPE_ADDON_PRICE_ID_BUSINESS_MONTHLY || process.env.STRIPE_ADDON_PRICE_ID_BUSINESS || undefined;
 
   // Fallback: if base price exists in grouped lists, decide by interval if provided
   const lite = new Set(getLitePriceIds());

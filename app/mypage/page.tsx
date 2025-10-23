@@ -1437,7 +1437,7 @@ function AddRecipientsModal({
               {/* ③ 料金（左右余白は上と同一コンテナなので揃う） */}
               {typeof unitAmount !== "undefined" && !isAllFree && (
                 <div className="rounded-md bg-gray-50 p-3 text-sm text-gray-700">
-                  料金（{billingInterval === "year" ? "年額" : "月額"}）：
+                  料金 (月額・消費税10%込)：
                   {formatCurrency(unitAmount, currency)} / 1メール
                 </div>
               )}

@@ -18,13 +18,11 @@ function envList(name: string): string[] {
     .filter(Boolean);
 }
 
-// Collect all addon price ids we consider as seat add-ons
+// Collect addon price ids for seat add-ons (monthly only)
 const ADDON_PRICE_IDS = new Set(
   [
     process.env.STRIPE_ADDON_PRICE_ID_LITE_MONTHLY,
-    process.env.STRIPE_ADDON_PRICE_ID_LITE_YEARLY,
     process.env.STRIPE_ADDON_PRICE_ID_BUSINESS_MONTHLY,
-    process.env.STRIPE_ADDON_PRICE_ID_BUSINESS_YEARLY,
     ...envList("STRIPE_ADDON_PRICE_IDS"),
   ].filter((v): v is string => typeof v === "string" && !!v)
 );

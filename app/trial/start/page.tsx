@@ -3,8 +3,24 @@ import { useEffect, useState, useRef } from "react";
 import Link from "next/link";
 
 export default function TrialStartPage() {
+  const PLUS_BLOCK_DOMAINS = new Set([
+    "gmail.com",
+    "googlemail.com",
+    "outlook.com",
+    "hotmail.com",
+    "live.com",
+    "msn.com",
+    "icloud.com",
+    "me.com",
+    "mac.com",
+    "yahoo.co.jp",
+    "yahoo.com",
+    "proton.me",
+    "protonmail.com",
+  ]);
+
   const [status, setStatus] = useState<
-    "processing" | "success" | "error" | "already" | "ended"
+    "processing" | "success" | "error" | "already" | "ended" | "alias"
   >("processing");
   const [detail, setDetail] = useState<string | null>(null);
   const [isPopup, setIsPopup] = useState(false);
@@ -21,6 +37,37 @@ export default function TrialStartPage() {
       try {
         const url = new URL(window.location.href);
         const email = url.searchParams.get("e");
+
+        // クエリの生値で「+」(または%2B)を検出し、エイリアスとして除外
+        const rawE = (() => {
+          const m = window.location.search.match(/(?:^|[?&])e=([^&]*)/);
+          return m ? m[1] : null;
+        })();
+        const rawHasPlus =
+          !!rawE && (rawE.includes("+") || rawE.toLowerCase().includes("%2b"));
+        if (rawHasPlus) {
+          history.replaceState(null, "", `${url.origin}${url.pathname}`);
+          setDetail(null);
+          setStatus("alias");
+          return;
+        }
+
+        // エイリアス形式は対象外
+        if (email) {
+          const at = email.indexOf("@");
+          if (at > 0) {
+            const local = email.slice(0, at);
+            const domain = email.slice(at + 1).toLowerCase();
+
+            // 「+」があり、かつ “+ サブアドレスを一般に採用しているドメイン” のときだけブロック
+            if (local.includes("+") && PLUS_BLOCK_DOMAINS.has(domain)) {
+              history.replaceState(null, "", `${url.origin}${url.pathname}`);
+              setDetail(null);
+              setStatus("alias");
+              return;
+            }
+          }
+        }
 
         if (!email) {
           setStatus("error");
@@ -247,6 +294,7 @@ export default function TrialStartPage() {
     <main className="mx-auto max-w-lg p-6 text-center">
       <h1 className="text-xl font-bold mb-4">無料トライアル</h1>
       {status === "processing" && <p>Loading...</p>}
+      {status === "alias" && <p>エイリアス形式のメールは対象外です。</p>}
       {status === "error" && (
         <p>エラーが発生しました。{detail && <span>{detail}</span>}</p>
       )}

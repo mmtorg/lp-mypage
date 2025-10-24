@@ -1241,13 +1241,9 @@ function ResolvedView({
               <PortalButton email={email} mode="cancel" label="プラン解約" />
             </div>
 
-            {/* 請求・決済情報 */}
+            {/* 請求・決済 */}
             <div className="w-full">
-              <PortalButton
-                email={email}
-                mode="billing"
-                label="請求・決済情報"
-              />
+              <PortalButton email={email} mode="billing" label="請求・決済" />
             </div>
           </div>
         </section>
@@ -1843,7 +1839,7 @@ function AddRecipientsModal({
             {paidCount > 0 && portalUrl ? (
               <Button asChild>
                 <a href={portalUrl} target="_blank" rel="noopener noreferrer">
-                  サブスクリプションを確認
+                  請求・決済を確認
                 </a>
               </Button>
             ) : null}
@@ -2396,7 +2392,7 @@ function DeleteRecipientsModal({
             {deletedPaidCount > 0 && portalUrl && (
               <Button asChild>
                 <a href={portalUrl} target="_blank" rel="noopener noreferrer">
-                  サブスクリプションを確認
+                  請求・決済を確認
                 </a>
               </Button>
             )}

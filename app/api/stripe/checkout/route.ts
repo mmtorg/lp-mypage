@@ -388,6 +388,9 @@ export async function POST(req: NextRequest) {
       const portal = await stripe.billingPortal.sessions.create({
         customer: stripeCustomerId,
         return_url: `${baseUrl}/mypage?updated=1`,
+        ...(process.env.STRIPE_PORTAL_CONFIG_BILLING
+          ? { configuration: process.env.STRIPE_PORTAL_CONFIG_BILLING }
+          : {}),
       });
       return NextResponse.json({
         updated: true,
@@ -411,6 +414,9 @@ export async function POST(req: NextRequest) {
       const portal = await stripe.billingPortal.sessions.create({
         customer: stripeCustomerId,
         return_url: `${baseUrl}/mypage?updated=1`,
+        ...(process.env.STRIPE_PORTAL_CONFIG_BILLING
+          ? { configuration: process.env.STRIPE_PORTAL_CONFIG_BILLING }
+          : {}),
       });
       return NextResponse.json({
         updated: true,

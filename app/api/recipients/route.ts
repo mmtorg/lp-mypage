@@ -506,6 +506,9 @@ export async function DELETE(req: NextRequest) {
           const portal = await stripe.billingPortal.sessions.create({
             customer: customerId,
             return_url: returnUrl,
+            ...(process.env.STRIPE_PORTAL_CONFIG_BILLING
+              ? { configuration: process.env.STRIPE_PORTAL_CONFIG_BILLING }
+              : {}),
           });
           portalUrl = portal?.url;
         }

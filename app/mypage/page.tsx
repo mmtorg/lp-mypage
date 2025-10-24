@@ -1,6 +1,7 @@
 ﻿"use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import Script from "next/script";
 import {
   Card,
@@ -60,6 +61,9 @@ interface SubscriptionData {
 }
 
 export default function MyPage() {
+  const router = useRouter();
+  const search = useSearchParams();
+  const { toast } = useToast();
   const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -69,7 +73,14 @@ export default function MyPage() {
   const [authStage, setAuthStage] = useState<
     null | "login" | "register" | "emailSent"
   >(null);
+  // ログイン/登録の進行状態
   const [authBusy, setAuthBusy] = useState(false);
+  // 「パスワードをお忘れの方」押下時の進行状態（ログインボタンの見た目に影響しないよう分離）
+  const [forgotBusy, setForgotBusy] = useState(false);
+  // emailSent の用途（signup or reset）
+  const [emailSentType, setEmailSentType] = useState<"signup" | "reset" | null>(
+    null
+  );
   const [password, setPassword] = useState("");
   const [password2, setPassword2] = useState("");
   const [authError, setAuthError] = useState<string | null>(null);
@@ -167,6 +178,20 @@ export default function MyPage() {
         refreshByEmail(last);
       }
     } catch {}
+    // If no last session email, try to prefill from Supabase session
+    (async () => {
+      try {
+        if (sub) return;
+        const supabase = getSupabaseBrowser();
+        const { data } = await supabase.auth.getUser();
+        const authedEmail = data.user?.email?.toLowerCase();
+        if (authedEmail && !email) {
+          setEmail(authedEmail);
+          setBooting(true);
+          refreshByEmail(authedEmail);
+        }
+      } catch {}
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -175,6 +200,43 @@ export default function MyPage() {
       setBooting(false);
     }
   }, [booting, loading]);
+
+  // クエリパラメータのサクセスメッセージ表示とクエリ除去はクライアント副作用で行う
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const welcome = search?.get("welcome");
+    const reset = search?.get("reset");
+    const resetErr = search?.get("reset_error");
+    if (welcome) {
+      toast({
+        title: "アカウント作成が完了しました",
+        description: "マイページにログインしました。",
+      });
+    }
+    if (reset) {
+      toast({
+        title: "パスワードを更新しました",
+        description: "新しいパスワードでログインできます。",
+      });
+    }
+    if (resetErr) {
+      // 失効・未セッションいずれでも、指定文言を表示
+      toast({
+        title: "認証セッションが見つかりません。メールを再送してください。",
+      });
+    }
+    if (welcome || reset || resetErr) {
+      const sp = new URLSearchParams(window.location.search);
+      sp.delete("welcome");
+      sp.delete("reset");
+      sp.delete("reset_error");
+      const next = `${window.location.pathname}${
+        sp.toString() ? `?${sp.toString()}` : ""
+      }`;
+      router.replace(next);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search]);
 
   const handleCheck = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -238,6 +300,7 @@ export default function MyPage() {
         <div className="mb-8 text-center">
           <h1 className="mb-2 text-3xl font-bold text-gray-900">マイページ</h1>
         </div>
+        {/* 成功メッセージは useEffect で処理済み */}
 
         {!sub &&
           (!hydrated ? (
@@ -347,6 +410,8 @@ export default function MyPage() {
                   setPassword("");
                   setPassword2("");
                   setAuthError(null);
+                  setForgotBusy(false);
+                  setEmailSentType(null);
                 }}
                 onLogin={async () => {
                   setAuthError(null);
@@ -373,10 +438,9 @@ export default function MyPage() {
                       );
                     }
                   } catch (err) {
+                    const { toJapaneseAuthErrorMessage } = await import("@/lib/auth-errors");
                     setAuthError(
-                      err instanceof Error
-                        ? err.message
-                        : "ログインに失敗しました。"
+                      toJapaneseAuthErrorMessage(err, "ログインに失敗しました。")
                     );
                   } finally {
                     setAuthBusy(false);
@@ -399,10 +463,9 @@ export default function MyPage() {
                   try {
                     const supabase = getSupabaseBrowser();
                     let origin =
-                      process.env.NEXT_PUBLIC_APP_URL ||
                       (typeof window !== "undefined"
                         ? window.location.origin
-                        : undefined);
+                        : undefined) || process.env.NEXT_PUBLIC_APP_URL;
                     try {
                       if (origin) origin = new URL(origin).origin;
                     } catch {}
@@ -410,16 +473,18 @@ export default function MyPage() {
                       email: (sub.email || email).trim(),
                       password,
                       options: origin
-                        ? { emailRedirectTo: `${origin}/auth/callback` }
+                        ? {
+                            emailRedirectTo: `${origin}/auth/callback?flow=signup`,
+                          }
                         : undefined,
                     });
                     if (error) throw error;
+                    setEmailSentType("signup");
                     setAuthStage("emailSent");
                   } catch (err) {
+                    const { toJapaneseAuthErrorMessage } = await import("@/lib/auth-errors");
                     setAuthError(
-                      err instanceof Error
-                        ? err.message
-                        : "登録に失敗しました。"
+                      toJapaneseAuthErrorMessage(err, "登録に失敗しました。")
                     );
                   } finally {
                     setAuthBusy(false);
@@ -427,35 +492,41 @@ export default function MyPage() {
                 }}
                 onForgot={async () => {
                   setAuthError(null);
-                  setAuthBusy(true);
+                  setForgotBusy(true);
                   try {
                     const supabase = getSupabaseBrowser();
                     let origin =
-                      process.env.NEXT_PUBLIC_APP_URL ||
                       (typeof window !== "undefined"
                         ? window.location.origin
-                        : undefined);
+                        : undefined) || process.env.NEXT_PUBLIC_APP_URL;
                     try {
                       if (origin) origin = new URL(origin).origin;
                     } catch {}
                     const { error } = await supabase.auth.resetPasswordForEmail(
                       (sub.email || email).trim(),
                       origin
-                        ? { redirectTo: `${origin}/auth/callback` }
+                        ? {
+                            redirectTo: `${origin}/auth/callback?flow=recovery`,
+                          }
                         : undefined
                     );
                     if (error) throw error;
+                    setEmailSentType("reset");
                     setAuthStage("emailSent");
                   } catch (err) {
+                    const { toJapaneseAuthErrorMessage } = await import("@/lib/auth-errors");
                     setAuthError(
-                      err instanceof Error
-                        ? err.message
-                        : "パスワードリセットに失敗しました。"
+                      toJapaneseAuthErrorMessage(
+                        err,
+                        "パスワードリセットに失敗しました。"
+                      )
                     );
                   } finally {
-                    setAuthBusy(false);
+                    setForgotBusy(false);
                   }
                 }}
+                forgotBusy={forgotBusy}
+                emailSentType={emailSentType}
               />
             </div>
           )}
@@ -504,6 +575,8 @@ type AuthGateProps = {
   onRegister: () => void | Promise<void>;
   onForgot: () => void | Promise<void>;
   onReset: () => void;
+  forgotBusy?: boolean;
+  emailSentType?: "signup" | "reset" | null;
 };
 
 function AuthGate({
@@ -519,6 +592,8 @@ function AuthGate({
   onRegister,
   onForgot,
   onReset,
+  forgotBusy,
+  emailSentType,
 }: AuthGateProps) {
   const [showPassword, setShowPassword] = useState(false);
   const [showPasswordReg1, setShowPasswordReg1] = useState(false);
@@ -530,9 +605,17 @@ function AuthGate({
     return (
       <Card className="rounded-2xl border-0 shadow-md">
         <CardHeader>
-          <CardTitle className="text-xl">認証メールを送信しました</CardTitle>
+          <CardTitle className="text-xl">
+            {emailSentType === "reset"
+              ? "パスワード再設定メールを送信しました"
+              : "認証メールを送信しました"}
+          </CardTitle>
           <CardDescription>
-            {email} 宛に認証メールを送信しました。
+            {email} 宛に
+            {emailSentType === "reset"
+              ? "パスワード再設定メール"
+              : "認証メール"}
+            を送信しました。
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -772,9 +855,17 @@ function AuthGate({
                 type="button"
                 className="text-sm text-blue-600 hover:underline"
                 onClick={onForgot}
-                disabled={busy}
+                disabled={busy || !!forgotBusy}
+                aria-busy={!!forgotBusy}
               >
-                パスワードをお忘れの方
+                {forgotBusy ? (
+                  <>
+                    <Loader2 className="mr-1 inline h-3.5 w-3.5 animate-spin align-[-2px]" />
+                    メール送信中...
+                  </>
+                ) : (
+                  "パスワードをお忘れの方"
+                )}
               </button>
             </div>
           </div>

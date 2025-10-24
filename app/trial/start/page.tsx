@@ -137,7 +137,10 @@ export default function TrialStartPage() {
               毎朝お届けする配信メール内に申込ボタンがございます。
               <br />
               <Link
-                href="https://www.daily-mna.com/pricing-m"
+                href={
+                  process.env.NEXT_PUBLIC_PRICING_URL ??
+                  "https://www.daily-mna.com/pricing-m"
+                }
                 target="_blank"
                 className="text-blue-600 underline font-medium"
               >
@@ -228,7 +231,10 @@ export default function TrialStartPage() {
           <p>
             それでも、見当たらない場合には{" "}
             <Link
-              href="https://www.daily-mna.com/contact" // ←実際の問い合わせURLに変更可
+              href={
+                process.env.NEXT_PUBLIC_CONTACT_URL ??
+                "https://www.daily-mna.com/contact"
+              }
               target="_blank"
               className="text-blue-600 underline font-medium"
             >
@@ -265,7 +271,10 @@ export default function TrialStartPage() {
           <p>
             有料プランのお申込は{" "}
             <Link
-              href="https://www.daily-mna.com/pricing-m" // ←実際の料金ページに変更OK
+              href={
+                process.env.NEXT_PUBLIC_PRICING_URL ??
+                "https://www.daily-mna.com/pricing-m"
+              }
               target="_blank"
               className="text-blue-600 underline font-medium"
             >

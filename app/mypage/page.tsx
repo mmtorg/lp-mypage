@@ -353,7 +353,7 @@ export default function MyPage() {
                         Loading...
                       </>
                     ) : (
-                      "購入中の有料プランを確認"
+                      "プランを取得"
                     )}
                   </Button>
                 </form>
@@ -438,9 +438,14 @@ export default function MyPage() {
                       );
                     }
                   } catch (err) {
-                    const { toJapaneseAuthErrorMessage } = await import("@/lib/auth-errors");
+                    const { toJapaneseAuthErrorMessage } = await import(
+                      "@/lib/auth-errors"
+                    );
                     setAuthError(
-                      toJapaneseAuthErrorMessage(err, "ログインに失敗しました。")
+                      toJapaneseAuthErrorMessage(
+                        err,
+                        "ログインに失敗しました。"
+                      )
                     );
                   } finally {
                     setAuthBusy(false);
@@ -482,7 +487,9 @@ export default function MyPage() {
                     setEmailSentType("signup");
                     setAuthStage("emailSent");
                   } catch (err) {
-                    const { toJapaneseAuthErrorMessage } = await import("@/lib/auth-errors");
+                    const { toJapaneseAuthErrorMessage } = await import(
+                      "@/lib/auth-errors"
+                    );
                     setAuthError(
                       toJapaneseAuthErrorMessage(err, "登録に失敗しました。")
                     );
@@ -514,7 +521,9 @@ export default function MyPage() {
                     setEmailSentType("reset");
                     setAuthStage("emailSent");
                   } catch (err) {
-                    const { toJapaneseAuthErrorMessage } = await import("@/lib/auth-errors");
+                    const { toJapaneseAuthErrorMessage } = await import(
+                      "@/lib/auth-errors"
+                    );
                     setAuthError(
                       toJapaneseAuthErrorMessage(
                         err,
@@ -537,7 +546,7 @@ export default function MyPage() {
               <Card className="rounded-2xl border-0 shadow-md">
                 <CardHeader className="pb-3">
                   <CardTitle className="text-xl">
-                    購入中の有料プランがありません。
+                    取得に失敗しました。
                   </CardTitle>
                   <CardDescription>{sub.email || email}</CardDescription>
                 </CardHeader>

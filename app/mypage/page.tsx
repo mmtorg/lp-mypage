@@ -78,6 +78,8 @@ export default function MyPage() {
   const [authBusy, setAuthBusy] = useState(false);
   // 「パスワードをお忘れの方」押下時の進行状態（ログインボタンの見た目に影響しないよう分離）
   const [forgotBusy, setForgotBusy] = useState(false);
+  // 認証メール再送の進行状態
+  const [resendBusy, setResendBusy] = useState(false);
   // emailSent の用途（signup or reset）
   const [emailSentType, setEmailSentType] = useState<"signup" | "reset" | null>(
     null
@@ -236,7 +238,9 @@ export default function MyPage() {
       // 明示コードや断片からの補完（期限切れなど）
       if (
         msg === fallback &&
-        (v.includes("otp_expired") || v.includes("expired") || v.includes("invalid or expired"))
+        (v.includes("otp_expired") ||
+          v.includes("expired") ||
+          v.includes("invalid or expired"))
       ) {
         msg = "URLの有効期限が切れているか無効です。メールを再送してください。";
       }
@@ -432,6 +436,7 @@ export default function MyPage() {
                   setPassword2("");
                   setAuthError(null);
                   setForgotBusy(false);
+                  setResendBusy(false);
                   setEmailSentType(null);
                 }}
                 onLogin={async () => {
@@ -556,6 +561,45 @@ export default function MyPage() {
                   }
                 }}
                 forgotBusy={forgotBusy}
+                onResendSignup={async () => {
+                  setAuthError(null);
+                  setResendBusy(true);
+                  try {
+                    const supabase = getSupabaseBrowser();
+                    let origin =
+                      (typeof window !== "undefined"
+                        ? window.location.origin
+                        : undefined) || process.env.NEXT_PUBLIC_APP_URL;
+                    try {
+                      if (origin) origin = new URL(origin).origin;
+                    } catch {}
+                    const { error } = await supabase.auth.resend({
+                      type: "signup",
+                      email: (sub.email || email).trim(),
+                      options: origin
+                        ? {
+                            emailRedirectTo: `${origin}/auth/callback?flow=signup`,
+                          }
+                        : undefined,
+                    });
+                    if (error) throw error;
+                    setEmailSentType("signup");
+                    setAuthStage("emailSent");
+                  } catch (err) {
+                    const { toJapaneseAuthErrorMessage } = await import(
+                      "@/lib/auth-errors"
+                    );
+                    setAuthError(
+                      toJapaneseAuthErrorMessage(
+                        err,
+                        "認証メールの再送に失敗しました。"
+                      )
+                    );
+                  } finally {
+                    setResendBusy(false);
+                  }
+                }}
+                resendBusy={resendBusy}
                 emailSentType={emailSentType}
               />
             </div>
@@ -606,6 +650,8 @@ type AuthGateProps = {
   onForgot: () => void | Promise<void>;
   onReset: () => void;
   forgotBusy?: boolean;
+  onResendSignup?: () => void | Promise<void>;
+  resendBusy?: boolean;
   emailSentType?: "signup" | "reset" | null;
 };
 
@@ -623,6 +669,8 @@ function AuthGate({
   onForgot,
   onReset,
   forgotBusy,
+  onResendSignup,
+  resendBusy,
   emailSentType,
 }: AuthGateProps) {
   const [showPassword, setShowPassword] = useState(false);
@@ -762,6 +810,31 @@ function AuthGate({
               </div>
             )}
 
+            {/* 未確認メールのときは再送導線を表示（登録画面でも保持） */}
+            {(resendBusy ||
+              (typeof error === "string" &&
+                (error.includes("確認が完了していません") ||
+                  error.includes("メール認証が完了していません")))) && (
+              <div className="text-right">
+                <button
+                  type="button"
+                  className="text-sm text-blue-600 hover:underline"
+                  onClick={onResendSignup}
+                  disabled={busy || !!resendBusy}
+                  aria-busy={!!resendBusy}
+                >
+                  {resendBusy ? (
+                    <>
+                      <Loader2 className="mr-1 inline h-3.5 w-3.5 animate-spin align-[-2px]" />
+                      メール再送中...
+                    </>
+                  ) : (
+                    "認証メールを再送する"
+                  )}
+                </button>
+              </div>
+            )}
+
             {/* ボタン */}
             <div className="flex items-center justify-between">
               <Button variant="outline" onClick={onReset} disabled={busy}>
@@ -881,22 +954,44 @@ function AuthGate({
             </div>
 
             <div className="text-right">
-              <button
-                type="button"
-                className="text-sm text-blue-600 hover:underline"
-                onClick={onForgot}
-                disabled={busy || !!forgotBusy}
-                aria-busy={!!forgotBusy}
-              >
-                {forgotBusy ? (
-                  <>
-                    <Loader2 className="mr-1 inline h-3.5 w-3.5 animate-spin align-[-2px]" />
-                    メール送信中...
-                  </>
-                ) : (
-                  "パスワードをお忘れの方"
-                )}
-              </button>
+              {resendBusy ||
+              (typeof error === "string" &&
+                (error.includes("確認が完了していません") ||
+                  error.includes("メール認証が完了していません"))) ? (
+                <button
+                  type="button"
+                  className="text-sm text-blue-600 hover:underline"
+                  onClick={onResendSignup}
+                  disabled={busy || !!resendBusy}
+                  aria-busy={!!resendBusy}
+                >
+                  {resendBusy ? (
+                    <>
+                      <Loader2 className="mr-1 inline h-3.5 w-3.5 animate-spin align-[-2px]" />
+                      メール再送中...
+                    </>
+                  ) : (
+                    "認証メールを再送する"
+                  )}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="text-sm text-blue-600 hover:underline"
+                  onClick={onForgot}
+                  disabled={busy || !!forgotBusy}
+                  aria-busy={!!forgotBusy}
+                >
+                  {forgotBusy ? (
+                    <>
+                      <Loader2 className="mr-1 inline h-3.5 w-3.5 animate-spin align-[-2px]" />
+                      メール送信中...
+                    </>
+                  ) : (
+                    "パスワードをお忘れの方"
+                  )}
+                </button>
+              )}
             </div>
           </div>
         </CardContent>

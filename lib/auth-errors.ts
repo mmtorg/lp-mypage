@@ -1,6 +1,21 @@
 // Supabase Auth の英語エラーメッセージを日本語に変換するユーティリティ
 // 想定メッセージの揺れに対応するため、一部は部分一致で判定します。
 
+// エラーオブジェクトから code / message を安全に取り出す
+export function getAuthErrorInfo(err: unknown): { code?: string; message?: string } {
+  if (typeof err === "string") return { message: err };
+  if (err && typeof err === "object") {
+    const anyErr: any = err as any;
+    const code =
+      (typeof anyErr.code === "string" && anyErr.code) ||
+      (typeof anyErr.error === "string" && anyErr.error) ||
+      undefined;
+    const message = typeof anyErr.message === "string" ? anyErr.message : undefined;
+    return { code, message };
+  }
+  return {};
+}
+
 export function toJapaneseAuthErrorMessage(
   err: unknown,
   fallback?: string
@@ -18,6 +33,32 @@ export function toJapaneseAuthErrorMessage(
   })();
 
   const m = (msg || "").toLowerCase();
+
+  // code 優先のマッピング（message より先に評価）
+  try {
+    const { code } = getAuthErrorInfo(err);
+    const c = (code || "").toLowerCase();
+    switch (c) {
+      case "invalid_credentials":
+        return "メールまたはパスワードが正しくありません。";
+      case "email_not_confirmed":
+        return "メールアドレスの確認が完了していません。";
+      case "bad_json":
+      case "validation_failed":
+        return "リクエストの形式が不正です。時間をおいて再度お試しください。";
+      case "email_provider_disabled":
+      case "signup_disabled":
+        return "現在、メール/パスワードのサインイン・登録は無効化されています。";
+      case "captcha_failed":
+        return "CAPTCHA の検証に失敗しました。やり直してください。";
+      case "bad_jwt":
+        return "不正なトークンが指定されました。やり直してください。";
+      case "too_many_requests":
+        return "リクエストが多すぎます。しばらく時間をおいてからお試しください。";
+      case "unexpected_failure":
+        return "サーバーで問題が発生しました。時間をおいて再度お試しください。";
+    }
+  } catch {}
 
   // 代表的な Supabase 認証エラーのメッセージ変換
   if (m.includes("invalid login credentials")) {
@@ -85,4 +126,28 @@ export function toJapaneseAuthErrorMessage(
 
   // 上記に該当しなければ元メッセージをそのまま（英語のまま）返すか、フォールバック
   return msg || defaultMsg;
+}
+
+// メール未認証エラーの判定（コード優先、メッセージ補完）
+export function isEmailNotConfirmedError(err: unknown): boolean {
+  try {
+    if (typeof err === "string") {
+      return err.toLowerCase().includes("email not confirmed");
+    }
+    if (err && typeof err === "object") {
+      const anyErr: any = err as any;
+      const code =
+        (typeof anyErr.code === "string" && anyErr.code) ||
+        (typeof anyErr.error === "string" && anyErr.error);
+      if (typeof code === "string" && code.toLowerCase() === "email_not_confirmed") {
+        return true;
+      }
+      const msg =
+        (typeof anyErr.message === "string" && anyErr.message) || "";
+      if (msg && msg.toLowerCase().includes("email not confirmed")) {
+        return true;
+      }
+    }
+  } catch {}
+  return false;
 }

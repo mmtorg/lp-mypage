@@ -87,6 +87,7 @@ export default function MyPage() {
   const [password, setPassword] = useState("");
   const [password2, setPassword2] = useState("");
   const [authError, setAuthError] = useState<string | null>(null);
+  const [emailNotConfirmed, setEmailNotConfirmed] = useState(false);
   const [isAuthed, setIsAuthed] = useState(false);
   // 枠情報（ベース/追加/使用/残り）
   const [recipLimits, setRecipLimits] = useState<{
@@ -437,10 +438,12 @@ export default function MyPage() {
                   setAuthError(null);
                   setForgotBusy(false);
                   setResendBusy(false);
+                  setEmailNotConfirmed(false);
                   setEmailSentType(null);
                 }}
                 onLogin={async () => {
                   setAuthError(null);
+                  setEmailNotConfirmed(false);
                   setAuthBusy(true);
                   try {
                     const supabase = getSupabaseBrowser();
@@ -473,6 +476,10 @@ export default function MyPage() {
                         "ログインに失敗しました。"
                       )
                     );
+                    try {
+                      const { isEmailNotConfirmedError } = await import("@/lib/auth-errors");
+                      setEmailNotConfirmed(isEmailNotConfirmedError(err));
+                    } catch {}
                   } finally {
                     setAuthBusy(false);
                   }
@@ -561,6 +568,7 @@ export default function MyPage() {
                   }
                 }}
                 forgotBusy={forgotBusy}
+                emailNotConfirmed={emailNotConfirmed}
                 onResendSignup={async () => {
                   setAuthError(null);
                   setResendBusy(true);
@@ -650,6 +658,7 @@ type AuthGateProps = {
   onForgot: () => void | Promise<void>;
   onReset: () => void;
   forgotBusy?: boolean;
+  emailNotConfirmed?: boolean;
   onResendSignup?: () => void | Promise<void>;
   resendBusy?: boolean;
   emailSentType?: "signup" | "reset" | null;
@@ -669,6 +678,7 @@ function AuthGate({
   onForgot,
   onReset,
   forgotBusy,
+  emailNotConfirmed,
   onResendSignup,
   resendBusy,
   emailSentType,
@@ -810,8 +820,8 @@ function AuthGate({
               </div>
             )}
 
-            {/* 未確認メールのときは再送導線を表示（登録画面でも保持） */}
-            {(resendBusy ||
+            {/* 未確認メールのときは再送導線を表示 */}
+            {(resendBusy || emailNotConfirmed ||
               (typeof error === "string" &&
                 (error.includes("確認が完了していません") ||
                   error.includes("メール認証が完了していません")))) && (
@@ -954,7 +964,7 @@ function AuthGate({
             </div>
 
             <div className="text-right">
-              {resendBusy ||
+              {resendBusy || emailNotConfirmed ||
               (typeof error === "string" &&
                 (error.includes("確認が完了していません") ||
                   error.includes("メール認証が完了していません"))) ? (

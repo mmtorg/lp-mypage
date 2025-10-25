@@ -18,6 +18,7 @@ export function getSupabaseServer() {
         cookieStore.set({ name, value: "", ...options, expires: new Date(0) });
       },
     },
+    // ブラウザ同様に implicit フローへ（サーバー側でのセッション連携の整合性確保）
+    auth: { flowType: "implicit" },
   });
 }
-

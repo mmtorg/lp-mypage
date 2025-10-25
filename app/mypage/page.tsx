@@ -16,6 +16,7 @@ import { Label } from "@/components/ui/label";
 import { Loader2, Eye, EyeOff } from "lucide-react";
 import { PortalButton } from "@/app/mypage/_components/PortalButton";
 import { useToast } from "@/hooks/use-toast";
+import { toJapaneseAuthErrorMessage } from "@/lib/auth-errors";
 import { getSupabaseBrowser } from "@/lib/supabase-browser";
 import {
   Dialog,
@@ -207,6 +208,7 @@ export default function MyPage() {
     const welcome = search?.get("welcome");
     const reset = search?.get("reset");
     const resetErr = search?.get("reset_error");
+    const authErr = search?.get("auth_error");
     if (welcome) {
       toast({
         title: "アカウント作成が完了しました",
@@ -225,11 +227,30 @@ export default function MyPage() {
         title: "認証セッションが見つかりません。メールを再送してください。",
       });
     }
-    if (welcome || reset || resetErr) {
+    if (authErr) {
+      // lib/auth-errors.ts のマッピングを優先し、足りないコード系は簡易判定で補完
+      const raw = String(authErr);
+      const fallback = "エラーが発生しました。時間をおいて再度お試しください。";
+      let msg = toJapaneseAuthErrorMessage(raw, fallback);
+      const v = raw.toLowerCase();
+      // 明示コードや断片からの補完（期限切れなど）
+      if (
+        msg === fallback &&
+        (v.includes("otp_expired") || v.includes("expired") || v.includes("invalid or expired"))
+      ) {
+        msg = "URLの有効期限が切れているか無効です。メールを再送してください。";
+      }
+      if (msg === fallback && v.includes("auth_session_missing")) {
+        msg = "認証セッションが見つかりません。メールを再送してください。";
+      }
+      toast({ title: msg });
+    }
+    if (welcome || reset || resetErr || authErr) {
       const sp = new URLSearchParams(window.location.search);
       sp.delete("welcome");
       sp.delete("reset");
       sp.delete("reset_error");
+      sp.delete("auth_error");
       const next = `${window.location.pathname}${
         sp.toString() ? `?${sp.toString()}` : ""
       }`;

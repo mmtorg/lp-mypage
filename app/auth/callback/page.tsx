@@ -31,22 +31,9 @@ function AuthCallbackInner() {
 
       let encounteredError: string | null = null;
 
-      // Try PKCE code flow first
-      if (code) {
-        try {
-          const { error } = await supabase.auth.exchangeCodeForSession(code);
-          if (error) throw error;
-        } catch (e) {
-          // record error, then fallback to hash flow below
-          const msg = (e as Error)?.message;
-          if (msg) encounteredError = msg;
-        }
-      }
-
-      // If token_hash is present (email link verification flow), verify OTP
+      // 1) token_hash 優先: メールリンクの検証でセッション確立
       if (token_hash && type) {
         try {
-          // whitelist expected OTP types and narrow the type for TypeScript
           const allowedTypes = [
             "recovery",
             "signup",
@@ -60,35 +47,44 @@ function AuthCallbackInner() {
             : undefined;
 
           if (otpType) {
-            const { data, error } = await supabase.auth.verifyOtp({
+            const { error } = await supabase.auth.verifyOtp({
               type: otpType,
               token_hash,
             });
             if (error) throw error;
           }
-          // verifyOtp may or may not return a session depending on type
         } catch (e) {
-          // Safely extract message from unknown error without using `any`
           const err = e as unknown;
           let msg: string | undefined;
-          if (err instanceof Error) {
-            msg = err.message;
-          } else if (
+          if (err instanceof Error) msg = err.message;
+          else if (
             typeof err === "object" &&
             err !== null &&
             "message" in err &&
             typeof (err as { message: unknown }).message === "string"
-          ) {
+          )
             msg = (err as { message: string }).message;
-          } else if (typeof err === "string") {
-            msg = err;
-          }
+          else if (typeof err === "string") msg = err;
           if (msg) encounteredError = msg;
-          // ignore and continue to other methods
         }
       }
 
-      // Fallback: handle access_token/refresh_token in hash
+      // 2) まだセッションが無ければ PKCE コード交換を試す
+      if (code) {
+        try {
+          const { data } = await supabase.auth.getSession();
+          const has = !!data.session;
+          if (!has) {
+            const { error } = await supabase.auth.exchangeCodeForSession(code);
+            if (error) throw error;
+          }
+        } catch (e) {
+          const msg = (e as Error)?.message;
+          if (msg) encounteredError = msg;
+        }
+      }
+
+      // 3) 最後のフォールバック: ハッシュ内トークンを直接セット
       const hashParams = parseHash(window.location.hash || "");
       const access_token = hashParams["access_token"];
       const refresh_token = hashParams["refresh_token"];

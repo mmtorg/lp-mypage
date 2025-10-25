@@ -39,6 +39,67 @@ export async function POST(req: NextRequest) {
               newEmail,
             }
           );
+          // Reflect customer.email change to local DB (user_stripe, recipient_emails)
+          try {
+            const customerId: string | undefined = customer?.id;
+            const prevEmail: string | null =
+              (event.data.previous_attributes?.email as string) || null;
+            const nextEmail: string | null = (customer?.email as string) || null;
+            if (customerId && prevEmail && nextEmail && prevEmail.toLowerCase() !== nextEmail.toLowerCase()) {
+              const nowIso = new Date().toISOString();
+              // Update user_stripe emails in bulk
+              try {
+                const { error: usErr } = await supabaseAdmin
+                  .from("user_stripe")
+                  .update({ email: nextEmail, updated_at: nowIso })
+                  .eq("stripe_customer_id", customerId);
+                if (usErr) console.error("[webhook] user_stripe email update error", usErr);
+              } catch (e) {
+                console.error("[webhook] user_stripe email update failure", e);
+              }
+              // Merge-update recipient_emails per parent to avoid unique conflicts
+              try {
+                const { data: parents, error: pErr } = await supabaseAdmin
+                  .from("user_stripe")
+                  .select("id")
+                  .eq("stripe_customer_id", customerId);
+                if (pErr) throw pErr;
+                const parentIds: number[] = (parents ?? [])
+                  .map((r: any) => r?.id)
+                  .filter((v: any) => typeof v === "number");
+                for (const pid of parentIds) {
+                  try {
+                    const existed = await supabaseAdmin
+                      .from("recipient_emails")
+                      .select("id")
+                      .eq("user_stripe_id", pid)
+                      .eq("email", nextEmail)
+                      .maybeSingle();
+                    if (!existed.error && existed.data?.id) {
+                      const { error: delErr } = await supabaseAdmin
+                        .from("recipient_emails")
+                        .delete()
+                        .eq("user_stripe_id", pid)
+                        .eq("email", prevEmail);
+                      if (delErr) console.error("[webhook] recipient_emails delete(prev) error", { pid, delErr });
+                    } else {
+                      const { error: upErr } = await supabaseAdmin
+                        .from("recipient_emails")
+                        .update({ email: nextEmail })
+                        .eq("user_stripe_id", pid)
+                        .eq("email", prevEmail);
+                      if (upErr) console.error("[webhook] recipient_emails update email error", { pid, upErr });
+                    }
+                  } catch (e) {
+                    console.error("[webhook] recipient_emails merge per parent failed", { pid, e });
+                  }
+                }
+                console.log("[webhook] recipient_emails email sync completed", { customerId, parents: parentIds.length });
+              } catch (e) {
+                console.error("[webhook] recipient_emails email sync failure", e);
+              }
+            }
+          } catch {}
         } catch {}
         break;
       }

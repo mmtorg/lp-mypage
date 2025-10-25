@@ -82,11 +82,11 @@ export function PortalButton({
   const handlePortalRedirect = async () => {
     if (isLoading) return;
 
-    // 変更以外（キャンセル/請求）はそのままポータルへ
-    if (mode !== "change") {
+    // 請求（billing）はそのままポータルへ
+    if (mode === "billing") {
       try {
         setIsLoading(true);
-        await goPortal(mode);
+        await goPortal("billing");
       } catch (error) {
         console.error("Portal redirect error:", error);
         toast({
@@ -102,13 +102,13 @@ export function PortalButton({
       return;
     }
 
-    // mode === "change": オーナー以外の配信先があるか事前チェック
+    // mode === "change" | "cancel": オーナー以外の配信先があるか事前チェック
     try {
       setIsLoading(true);
       const owner = (email || "").trim();
       if (!owner) {
         // email 未指定でもポータルへ（サーバ側で解決できる前提）
-        await goPortal("change");
+        await goPortal(mode);
         return;
       }
 
@@ -120,7 +120,7 @@ export function PortalButton({
 
       if (!checkRes.ok) {
         // 取得失敗時はそのままポータルへ
-        await goPortal("change");
+        await goPortal(mode);
         return;
       }
 
@@ -135,7 +135,7 @@ export function PortalButton({
 
       if (others.length === 0) {
         // 非オーナー配信先がいなければそのままポータルへ
-        await goPortal("change");
+        await goPortal(mode);
         return;
       }
 
@@ -185,9 +185,9 @@ export function PortalButton({
       // 削除完了 → 告知モーダルを表示（自動リダイレクトしない）
       setConfirmOpen(false);
       setPostNoticeOpen(true);
-      // ここでは必ず「プラン変更」用のポータル設定を使うため
-      // /api/stripe/portal?portal=change を優先して遷移先を構築する
-      // GET 遷移だと API 405 になるため、手動遷移時も goPortal("change") で POST を使う
+      // ここでは「プラン変更/解約」いずれのケースでも
+      // 明示的に次のポータル目的を指定して遷移（POST）する
+      // API 仕様上 GET は 405 のため、手動遷移時も goPortal(mode) を使う
       setPendingPortalUrl(null);
       setIsLoading(false);
     } catch (error) {
@@ -211,6 +211,8 @@ export function PortalButton({
       : mode === "cancel"
       ? "サブスクリプションをキャンセル"
       : "請求情報（支払い方法・請求書）";
+
+  const purposeWord = mode === "cancel" ? "プラン解約" : "プラン変更";
 
   const aria = label || defaultLabel;
 
@@ -237,7 +239,7 @@ export function PortalButton({
         <DialogContent className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[calc(100%-2rem)] sm:max-w-md p-6 gap-4">
           <DialogHeader className="space-y-1">
             <DialogDescription className="leading-6">
-              プラン変更のため契約者以外の配信先を削除します。
+              {purposeWord}のため契約者以外の配信先を削除します。
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="mt-2">
@@ -272,7 +274,7 @@ export function PortalButton({
         <DialogContent className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[calc(100%-2rem)] sm:max-w-md p-6 gap-4">
           <DialogHeader className="space-y-1">
             <DialogDescription className="leading-6">
-              契約者以外の配信先を削除しました。プラン変更に進んでください。
+              契約者以外の配信先を削除しました。{purposeWord}に進んでください。
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="mt-2">
@@ -281,7 +283,7 @@ export function PortalButton({
               onClick={async () => {
                 setIsLoading(true);
                 try {
-                  await goPortal("change");
+                  await goPortal(mode);
                 } catch (error) {
                   console.error("manual redirect error:", error);
                   toast({
@@ -304,7 +306,7 @@ export function PortalButton({
                   開いています...
                 </>
               ) : (
-                "プラン変更を開く"
+                `${purposeWord}を開く`
               )}
             </Button>
           </DialogFooter>

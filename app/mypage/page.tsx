@@ -16,6 +16,7 @@ import { Label } from "@/components/ui/label";
 import { Loader2, Eye, EyeOff } from "lucide-react";
 import { PortalButton } from "@/app/mypage/_components/PortalButton";
 import { useToast } from "@/hooks/use-toast";
+import { toJapaneseAuthErrorMessage } from "@/lib/auth-errors";
 import { getSupabaseBrowser } from "@/lib/supabase-browser";
 import {
   Dialog,
@@ -77,6 +78,8 @@ export default function MyPage() {
   const [authBusy, setAuthBusy] = useState(false);
   // 「パスワードをお忘れの方」押下時の進行状態（ログインボタンの見た目に影響しないよう分離）
   const [forgotBusy, setForgotBusy] = useState(false);
+  // 認証メール再送の進行状態
+  const [resendBusy, setResendBusy] = useState(false);
   // emailSent の用途（signup or reset）
   const [emailSentType, setEmailSentType] = useState<"signup" | "reset" | null>(
     null
@@ -84,6 +87,7 @@ export default function MyPage() {
   const [password, setPassword] = useState("");
   const [password2, setPassword2] = useState("");
   const [authError, setAuthError] = useState<string | null>(null);
+  const [emailNotConfirmed, setEmailNotConfirmed] = useState(false);
   const [isAuthed, setIsAuthed] = useState(false);
   // 枠情報（ベース/追加/使用/残り）
   const [recipLimits, setRecipLimits] = useState<{
@@ -207,6 +211,7 @@ export default function MyPage() {
     const welcome = search?.get("welcome");
     const reset = search?.get("reset");
     const resetErr = search?.get("reset_error");
+    const authErr = search?.get("auth_error");
     if (welcome) {
       toast({
         title: "アカウント作成が完了しました",
@@ -225,11 +230,32 @@ export default function MyPage() {
         title: "認証セッションが見つかりません。メールを再送してください。",
       });
     }
-    if (welcome || reset || resetErr) {
+    if (authErr) {
+      // lib/auth-errors.ts のマッピングを優先し、足りないコード系は簡易判定で補完
+      const raw = String(authErr);
+      const fallback = "エラーが発生しました。時間をおいて再度お試しください。";
+      let msg = toJapaneseAuthErrorMessage(raw, fallback);
+      const v = raw.toLowerCase();
+      // 明示コードや断片からの補完（期限切れなど）
+      if (
+        msg === fallback &&
+        (v.includes("otp_expired") ||
+          v.includes("expired") ||
+          v.includes("invalid or expired"))
+      ) {
+        msg = "URLの有効期限が切れているか無効です。メールを再送してください。";
+      }
+      if (msg === fallback && v.includes("auth_session_missing")) {
+        msg = "認証セッションが見つかりません。メールを再送してください。";
+      }
+      toast({ title: msg });
+    }
+    if (welcome || reset || resetErr || authErr) {
       const sp = new URLSearchParams(window.location.search);
       sp.delete("welcome");
       sp.delete("reset");
       sp.delete("reset_error");
+      sp.delete("auth_error");
       const next = `${window.location.pathname}${
         sp.toString() ? `?${sp.toString()}` : ""
       }`;
@@ -411,10 +437,13 @@ export default function MyPage() {
                   setPassword2("");
                   setAuthError(null);
                   setForgotBusy(false);
+                  setResendBusy(false);
+                  setEmailNotConfirmed(false);
                   setEmailSentType(null);
                 }}
                 onLogin={async () => {
                   setAuthError(null);
+                  setEmailNotConfirmed(false);
                   setAuthBusy(true);
                   try {
                     const supabase = getSupabaseBrowser();
@@ -447,6 +476,10 @@ export default function MyPage() {
                         "ログインに失敗しました。"
                       )
                     );
+                    try {
+                      const { isEmailNotConfirmedError } = await import("@/lib/auth-errors");
+                      setEmailNotConfirmed(isEmailNotConfirmedError(err));
+                    } catch {}
                   } finally {
                     setAuthBusy(false);
                   }
@@ -535,6 +568,46 @@ export default function MyPage() {
                   }
                 }}
                 forgotBusy={forgotBusy}
+                emailNotConfirmed={emailNotConfirmed}
+                onResendSignup={async () => {
+                  setAuthError(null);
+                  setResendBusy(true);
+                  try {
+                    const supabase = getSupabaseBrowser();
+                    let origin =
+                      (typeof window !== "undefined"
+                        ? window.location.origin
+                        : undefined) || process.env.NEXT_PUBLIC_APP_URL;
+                    try {
+                      if (origin) origin = new URL(origin).origin;
+                    } catch {}
+                    const { error } = await supabase.auth.resend({
+                      type: "signup",
+                      email: (sub.email || email).trim(),
+                      options: origin
+                        ? {
+                            emailRedirectTo: `${origin}/auth/callback?flow=signup`,
+                          }
+                        : undefined,
+                    });
+                    if (error) throw error;
+                    setEmailSentType("signup");
+                    setAuthStage("emailSent");
+                  } catch (err) {
+                    const { toJapaneseAuthErrorMessage } = await import(
+                      "@/lib/auth-errors"
+                    );
+                    setAuthError(
+                      toJapaneseAuthErrorMessage(
+                        err,
+                        "認証メールの再送に失敗しました。"
+                      )
+                    );
+                  } finally {
+                    setResendBusy(false);
+                  }
+                }}
+                resendBusy={resendBusy}
                 emailSentType={emailSentType}
               />
             </div>
@@ -585,6 +658,9 @@ type AuthGateProps = {
   onForgot: () => void | Promise<void>;
   onReset: () => void;
   forgotBusy?: boolean;
+  emailNotConfirmed?: boolean;
+  onResendSignup?: () => void | Promise<void>;
+  resendBusy?: boolean;
   emailSentType?: "signup" | "reset" | null;
 };
 
@@ -602,6 +678,9 @@ function AuthGate({
   onForgot,
   onReset,
   forgotBusy,
+  emailNotConfirmed,
+  onResendSignup,
+  resendBusy,
   emailSentType,
 }: AuthGateProps) {
   const [showPassword, setShowPassword] = useState(false);
@@ -741,6 +820,31 @@ function AuthGate({
               </div>
             )}
 
+            {/* 未確認メールのときは再送導線を表示 */}
+            {(resendBusy || emailNotConfirmed ||
+              (typeof error === "string" &&
+                (error.includes("確認が完了していません") ||
+                  error.includes("メール認証が完了していません")))) && (
+              <div className="text-right">
+                <button
+                  type="button"
+                  className="text-sm text-blue-600 hover:underline"
+                  onClick={onResendSignup}
+                  disabled={busy || !!resendBusy}
+                  aria-busy={!!resendBusy}
+                >
+                  {resendBusy ? (
+                    <>
+                      <Loader2 className="mr-1 inline h-3.5 w-3.5 animate-spin align-[-2px]" />
+                      メール再送中...
+                    </>
+                  ) : (
+                    "認証メールを再送する"
+                  )}
+                </button>
+              </div>
+            )}
+
             {/* ボタン */}
             <div className="flex items-center justify-between">
               <Button variant="outline" onClick={onReset} disabled={busy}>
@@ -860,22 +964,44 @@ function AuthGate({
             </div>
 
             <div className="text-right">
-              <button
-                type="button"
-                className="text-sm text-blue-600 hover:underline"
-                onClick={onForgot}
-                disabled={busy || !!forgotBusy}
-                aria-busy={!!forgotBusy}
-              >
-                {forgotBusy ? (
-                  <>
-                    <Loader2 className="mr-1 inline h-3.5 w-3.5 animate-spin align-[-2px]" />
-                    メール送信中...
-                  </>
-                ) : (
-                  "パスワードをお忘れの方"
-                )}
-              </button>
+              {resendBusy || emailNotConfirmed ||
+              (typeof error === "string" &&
+                (error.includes("確認が完了していません") ||
+                  error.includes("メール認証が完了していません"))) ? (
+                <button
+                  type="button"
+                  className="text-sm text-blue-600 hover:underline"
+                  onClick={onResendSignup}
+                  disabled={busy || !!resendBusy}
+                  aria-busy={!!resendBusy}
+                >
+                  {resendBusy ? (
+                    <>
+                      <Loader2 className="mr-1 inline h-3.5 w-3.5 animate-spin align-[-2px]" />
+                      メール再送中...
+                    </>
+                  ) : (
+                    "認証メールを再送する"
+                  )}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="text-sm text-blue-600 hover:underline"
+                  onClick={onForgot}
+                  disabled={busy || !!forgotBusy}
+                  aria-busy={!!forgotBusy}
+                >
+                  {forgotBusy ? (
+                    <>
+                      <Loader2 className="mr-1 inline h-3.5 w-3.5 animate-spin align-[-2px]" />
+                      メール送信中...
+                    </>
+                  ) : (
+                    "パスワードをお忘れの方"
+                  )}
+                </button>
+              )}
             </div>
           </div>
         </CardContent>
@@ -1226,7 +1352,7 @@ function ResolvedView({
             サブスクリプションの管理
           </h3>
           <p className="text-sm text-gray-600">
-            プラン変更時には契約者以外のメール配信先が削除されます。
+            プラン変更・解約時には契約者以外のメール配信先が削除されます。
           </p>
 
           {/* 「配信先の管理」と同じレイアウト + ボタン反転カラー */}

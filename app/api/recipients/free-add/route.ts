@@ -171,9 +171,7 @@ export async function POST(req: NextRequest) {
     const ADDON_PRICE_IDS = new Set(
       [
         process.env.STRIPE_ADDON_PRICE_ID_LITE_MONTHLY,
-        process.env.STRIPE_ADDON_PRICE_ID_LITE_YEARLY,
         process.env.STRIPE_ADDON_PRICE_ID_BUSINESS_MONTHLY,
-        process.env.STRIPE_ADDON_PRICE_ID_BUSINESS_YEARLY,
       ].filter((v): v is string => typeof v === "string" && !!v)
     );
 
@@ -208,8 +206,15 @@ export async function POST(req: NextRequest) {
     // 3) current usage and labeling state
     const rows = await fetchRecipientRows([parent.id]);
     const activeRows = rows.filter((r) => !r.pending_removal);
-    const usedSlots = activeRows.length;
+    // 使用中スロットは「契約者(1) + アクティブな配信先数」。
+    // ただし recipient_emails に既に契約者が含まれている場合は二重計上しない。
+    const hasOwner = activeRows.some(
+      (r) => String(r.email || "").toLowerCase() === ctx.normalizedOwner
+    );
+    const ownerCount = hasOwner ? 0 : 1;
+    const usedSlots = ownerCount + activeRows.length;
     const addonCount = activeRows.filter((r) => (r.created_via ?? "").toLowerCase() === "addon").length;
+    // initialCount には契約者分(1)も含める（ベース枠に含まれるため）
     const initialCount = usedSlots - addonCount;
 
     const totalAllowed = baseSlots + addonSlots;

@@ -64,49 +64,57 @@ async function collectSubscriptionItems(
       product = prodAny;
     }
 
-            const quantity = typeof item?.quantity === "number" && !Number.isNaN(item.quantity) ? item.quantity : 1;
-            let formattedName =
-              (product as any)?.name ??
-              price?.nickname ??
-              (typeof price?.product === "string" ? price.product : price?.id ?? "不明な商品");
+    const quantity = typeof item?.quantity === "number" && !Number.isNaN(item.quantity) ? item.quantity : 1;
+    let formattedName =
+      (product as any)?.name ??
+      price?.nickname ??
+      (typeof price?.product === "string" ? price.product : price?.id ?? "不明な商品");
 
-            // 金額の付与
-            if (price.unit_amount && price.currency) {
-              let displayAmount = price.unit_amount;
-              // JPYの場合は100で割る必要がない
-              if (price.currency.toLowerCase() !== 'jpy') {
-                displayAmount = price.unit_amount / 100;
-              }
+    // 金額の付与
+    if (price.unit_amount && price.currency) {
+      let displayAmount = price.unit_amount;
+      // JPYの場合は100で割る必要がない
+      if (price.currency.toLowerCase() !== 'jpy') {
+        displayAmount = price.unit_amount / 100;
+      }
 
-              const formatter = new Intl.NumberFormat('ja-JP', {
-                style: 'currency',
-                currency: price.currency.toUpperCase(),
-                minimumFractionDigits: 0,
-                maximumFractionDigits: price.currency.toLowerCase() === 'jpy' ? 0 : 2,
-              });
-              const formattedUnitAmount = formatter.format(displayAmount);
-              formattedName = `${formattedName} ${formattedUnitAmount}`;
-            }
+      const formatter = new Intl.NumberFormat('ja-JP', {
+        style: 'currency',
+        currency: price.currency.toUpperCase(),
+        minimumFractionDigits: 0,
+        maximumFractionDigits: price.currency.toLowerCase() === 'jpy' ? 0 : 2,
+      });
+      const formattedUnitAmount = formatter.format(displayAmount);
+      formattedName = `${formattedName} ${formattedUnitAmount}`;
+    }
 
-            // 間隔の付与（月額/年額）
-            try {
-              const rawInterval = String(price?.recurring?.interval || "").toLowerCase();
-              const suffix = rawInterval === 'year' ? ' (年額)' : rawInterval === 'month' ? ' (月額)' : '';
-              if (suffix) formattedName = `${formattedName}${suffix}`;
-            } catch {}
+    // アイテム種別を先に判定
+    const itemType = inferItemType(price, product);
 
-            const itemType = inferItemType(price, product);
-            if (itemType === "base" && !primaryPrice && price.unit_amount) {
-              primaryPrice = { unit_amount: price.unit_amount, currency: price.currency };
-            }
+    // 間隔の付与（月額/年額）: アドオンは常に月額表示
+    try {
+      const rawInterval = String(price?.recurring?.interval || "").toLowerCase();
+      const suffix = itemType === 'addon'
+        ? ' (月額)'
+        : rawInterval === 'year'
+          ? ' (年額)'
+          : rawInterval === 'month'
+            ? ' (月額)'
+            : '';
+      if (suffix) formattedName = `${formattedName}${suffix}`;
+    } catch {}
 
-            items.push({
-              name: formattedName,
-              quantity,
-              type: itemType,
-              price_id: price?.id,
-              product_id: productId,
-            });  }
+    if (itemType === "base" && !primaryPrice && price.unit_amount) {
+      primaryPrice = { unit_amount: price.unit_amount, currency: price.currency };
+    }
+
+    items.push({
+      name: formattedName,
+      quantity,
+      type: itemType,
+      price_id: price?.id,
+      product_id: productId,
+    });  }
 
   const primaryName = items.find((item) => item.type === "base")?.name ?? items[0]?.name;
   return { items, primaryName, primaryPrice };
@@ -154,22 +162,7 @@ async function inferPlanFromSubscription(sub: any): Promise<Plan> {
   return null;
 }
 
-function getAddonPriceId(plan: string | null, interval: string | null | undefined): string | undefined {
-  if (!plan || !interval) return undefined;
-
-  const planName = String(plan).toLowerCase();
-  const intervalName = String(interval).toLowerCase();
-
-  if (planName === "lite") {
-    if (intervalName === "month") return process.env.STRIPE_ADDON_PRICE_ID_LITE_MONTHLY;
-    if (intervalName === "year") return process.env.STRIPE_ADDON_PRICE_ID_LITE_YEARLY;
-  }
-  if (planName === "business") {
-    if (intervalName === "month") return process.env.STRIPE_ADDON_PRICE_ID_BUSINESS_MONTHLY;
-    if (intervalName === "year") return process.env.STRIPE_ADDON_PRICE_ID_BUSINESS_YEARLY;
-  }
-  return undefined;
-}
+// 追加購入（年額）は廃止済みのため、年額アドオンの解決関数は削除しました。
 
 export async function GET(req: NextRequest) {
   try {

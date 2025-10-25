@@ -34,50 +34,6 @@ lib/
 \`\`\`
 
 ## 環境変数設定
-
-`.env.local` ファイルを作成し、以下の環境変数を設定してください：
-
-\`\`\`bash
-# 必須: Stripe Payment Links
-NEXT_PUBLIC_PL_NEW_LITE_MONTHLY=https://buy.stripe.com/your_lite_monthly_link
-NEXT_PUBLIC_PL_NEW_LITE_YEARLY=https://buy.stripe.com/your_lite_yearly_link
-NEXT_PUBLIC_PL_NEW_BUS_MONTHLY=https://buy.stripe.com/your_business_monthly_link
-NEXT_PUBLIC_PL_NEW_BUS_YEARLY=https://buy.stripe.com/your_business_yearly_link
-NEXT_PUBLIC_PL_ADDON_LITE_SEAT_MONTHLY=https://buy.stripe.com/your_lite_addon_monthly_link
-NEXT_PUBLIC_PL_ADDON_LITE_SEAT_YEARLY=https://buy.stripe.com/your_lite_addon_yearly_link
-NEXT_PUBLIC_PL_ADDON_BUS_SEAT_MONTHLY=https://buy.stripe.com/your_bus_addon_monthly_link
-NEXT_PUBLIC_PL_ADDON_BUS_SEAT_YEARLY=https://buy.stripe.com/your_bus_addon_yearly_link
-
-# 必須: Stripe設定
-STRIPE_SECRET_KEY=sk_live_or_test_your_stripe_secret_key
-STRIPE_WEBHOOK_SECRET=whsec_your_webhook_secret
-
-# 必須: Stripe価格ID（いずれかの方法で設定）
-# 方法A: 既存仕様（CSVで月次・年次を含める）
-STRIPE_PRICE_IDS_LITE=price_xxx,price_yyy
-STRIPE_PRICE_IDS_BUSINESS=price_aaa,price_bbb
-# 方法B: 月次・年次を分割して管理（重複記載を回避）。
-# 両方を設定した場合は「方法A（CSV）」が優先されます。
-STRIPE_PRICE_ID_LITE_MONTHLY=price_lite_monthly
-STRIPE_PRICE_ID_LITE_YEARLY=price_lite_yearly
-STRIPE_PRICE_ID_BUSINESS_MONTHLY=price_biz_monthly
-STRIPE_PRICE_ID_BUSINESS_YEARLY=price_biz_yearly
-STRIPE_ADDON_PRICE_ID_LITE_MONTHLY=price_lite_addon_monthly
-STRIPE_ADDON_PRICE_ID_LITE_YEARLY=price_lite_addon_yearly
-STRIPE_ADDON_PRICE_ID_BUSINESS_MONTHLY=price_biz_addon_monthly
-STRIPE_ADDON_PRICE_ID_BUSINESS_YEARLY=price_biz_addon_yearly
-
-# 必須: Supabase設定
-# クライアント(ブラウザ)で使う公開鍵
-NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
-# サーバーで使うService Role (Webhook/管理処理)
-SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
-# 任意: サーバー側の明示的URL (無い場合はNEXT_PUBLIC_を流用)
-# SUPABASE_URL=https://your-project.supabase.co
-
-# オプション: アプリケーションURL
-NEXT_PUBLIC_APP_URL=https://your-domain.com
 \`\`\`
 
 ## 実装のポイント

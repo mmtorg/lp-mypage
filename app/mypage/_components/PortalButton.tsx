@@ -1,74 +1,226 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Loader2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
-// Stripeポータルボタンコンポーネント
-export type PortalButtonProps = { email?: string };
-export function PortalButton({ email }: PortalButtonProps) {
+export type PortalMode = "change" | "cancel" | "billing";
+
+export type PortalButtonProps = {
+  /** カスタマーポータルを開く対象のオーナーEmail（未指定でも可） */
+  email?: string;
+  /** 目的：プラン変更 / キャンセル / 請求情報 */
+  mode: PortalMode;
+  /** ボタン表示ラベル（未指定なら mode に応じた既定文言） */
+  label?: string;
+  /** 幅を100%にするか */
+  fullWidth?: boolean;
+};
+
+/**
+ * カスタマーポータル遷移ボタン
+ * - mode==="change" のとき、オーナー以外の配信先が存在する場合は削除確認を挟む
+ * - 削除完了後はモーダルで告知し、ボタン押下でポータル/プラン変更画面へ遷移
+ */
+export function PortalButton({
+  email,
+  mode,
+  label,
+  fullWidth = true,
+}: PortalButtonProps) {
   const [isLoading, setIsLoading] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [nonOwnerEmails, setNonOwnerEmails] = useState<string[]>([]);
+  const [postNoticeOpen, setPostNoticeOpen] = useState(false);
+  const [pendingPortalUrl, setPendingPortalUrl] = useState<string | null>(null);
   const { toast } = useToast();
 
-  // Stripeポータルへの遷移処理
+  // カスタマーポータルへ遷移
+  const goPortal = useCallback(
+    async (purpose: PortalMode, fallbackUrl?: string | null) => {
+      try {
+        if (fallbackUrl) {
+          window.location.assign(fallbackUrl);
+          return;
+        }
+        const response = await fetch("/api/stripe/portal", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            return_url: window.location.href,
+            email,
+            portal: purpose,
+          }),
+        });
+        if (!response.ok) {
+          throw new Error(
+            "ポータルURLの生成に失敗しました。しばらくしてからお試しください。"
+          );
+        }
+        const data = await response.json();
+        if (!data?.url) {
+          throw new Error("有効なポータルURLを取得できませんでした。");
+        }
+        window.location.assign(String(data.url));
+      } catch (error) {
+        throw error;
+      }
+    },
+    [email]
+  );
+
+  // ボタン押下時の挙動
   const handlePortalRedirect = async () => {
-    // 多重クリック防止
     if (isLoading) return;
 
-    setIsLoading(true);
+    // 変更以外（キャンセル/請求）はそのままポータルへ
+    if (mode !== "change") {
+      try {
+        setIsLoading(true);
+        await goPortal(mode);
+      } catch (error) {
+        console.error("Portal redirect error:", error);
+        toast({
+          title: "エラーが発生しました",
+          description:
+            error instanceof Error
+              ? error.message
+              : "ポータル遷移に失敗しました。しばらくしてから再度お試しください。",
+          variant: "destructive",
+        });
+        setIsLoading(false);
+      }
+      return;
+    }
 
+    // mode === "change": オーナー以外の配信先があるか事前チェック
     try {
-      // Stripe Billing Portal URLを取得するAPIを呼び出し
-      const response = await fetch("/api/stripe/portal", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        // 必要に応じてユーザー情報やreturn_urlを送信
-        body: JSON.stringify({
-          return_url: window.location.href, // 現在のページに戻る
-          email, // 非ログインでも email で解決可能
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error("ポータルURLの取得に失敗しました");
+      setIsLoading(true);
+      const owner = (email || "").trim();
+      if (!owner) {
+        // email 未指定でもポータルへ（サーバ側で解決できる前提）
+        await goPortal("change");
+        return;
       }
 
-      const data = await response.json();
+      const checkRes = await fetch(
+        `/api/stripe/subscription-by-email?email=${encodeURIComponent(
+          owner
+        )}&force=1&_=${Date.now()}`
+      );
 
-      if (!data.url) {
-        throw new Error("無効なポータルURLです");
+      if (!checkRes.ok) {
+        // 取得失敗時はそのままポータルへ
+        await goPortal("change");
+        return;
       }
 
-      // 同一タブで遷移（元の挙動へ戻す）
-      window.location.assign(data.url);
+      const sub = await checkRes.json();
+      const recips: Array<{ email?: string; pending_removal?: boolean }> =
+        Array.isArray(sub?.recipients) ? sub.recipients : [];
+
+      const ownerL = owner.toLowerCase();
+      const others = recips
+        .map((r) => String(r?.email || "").trim())
+        .filter((v) => v && v.toLowerCase() !== ownerL);
+
+      if (others.length === 0) {
+        // 非オーナー配信先がいなければそのままポータルへ
+        await goPortal("change");
+        return;
+      }
+
+      // 非オーナー配信先がいる → 確認ダイアログを表示
+      setNonOwnerEmails(Array.from(new Set(others)));
+      setConfirmOpen(true);
+      setIsLoading(false);
     } catch (error) {
-      console.error("Portal redirect error:", error);
-
-      // エラートーストを表示
+      console.error("precheck error:", error);
       toast({
         title: "エラーが発生しました",
         description:
           error instanceof Error
             ? error.message
-            : "ポータルへの遷移に失敗しました。しばらく時間をおいて再度お試しください。",
+            : "事前チェックに失敗しました。しばらくしてから再度お試しください。",
         variant: "destructive",
       });
-
       setIsLoading(false);
     }
   };
+
+  // 「OK（非オーナーを削除）」押下時
+  const handleConfirmDelete = async () => {
+    if (isLoading) return;
+    const owner = (email || "").trim();
+    if (!owner) return;
+
+    try {
+      setIsLoading(true);
+
+      const res = await fetch("/api/recipients", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ownerEmail: owner, emails: nonOwnerEmails }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error || "配信先の削除に失敗しました。");
+      }
+
+      const data = await res.json();
+      const portalUrl: string | undefined = data?.portalUrl
+        ? String(data.portalUrl)
+        : undefined;
+
+      // 削除完了 → 告知モーダルを表示（自動リダイレクトしない）
+      setConfirmOpen(false);
+      setPostNoticeOpen(true);
+      // ここでは必ず「プラン変更」用のポータル設定を使うため
+      // /api/stripe/portal?portal=change を優先して遷移先を構築する
+      // GET 遷移だと API 405 になるため、手動遷移時も goPortal("change") で POST を使う
+      setPendingPortalUrl(null);
+      setIsLoading(false);
+    } catch (error) {
+      console.error("delete/redirect error:", error);
+      toast({
+        title: "エラーが発生しました",
+        description:
+          error instanceof Error
+            ? error.message
+            : "配信先の削除または遷移に失敗しました。しばらくしてから再度お試しください。",
+        variant: "destructive",
+      });
+      setIsLoading(false);
+      setConfirmOpen(false);
+    }
+  };
+
+  const defaultLabel =
+    mode === "change"
+      ? "プランを変更"
+      : mode === "cancel"
+      ? "サブスクリプションをキャンセル"
+      : "請求情報（支払い方法・請求書）";
+
+  const aria = label || defaultLabel;
 
   return (
     <div className="space-y-2">
       <Button
         onClick={handlePortalRedirect}
         disabled={isLoading}
-        variant="outline"
-        className="w-full h-auto p-3 justify-center text-base font-semibold rounded-lg border-2 border-gray-300 bg-white shadow-sm hover:border-gray-400 hover:shadow-md transition"
-        aria-label="請求情報を確認・解約"
+        className={fullWidth ? "w-full" : undefined}
+        aria-label={aria}
       >
         {isLoading ? (
           <>
@@ -76,9 +228,88 @@ export function PortalButton({ email }: PortalButtonProps) {
             Loading...
           </>
         ) : (
-          "管理画面を開く"
+          label || defaultLabel
         )}
       </Button>
+
+      {/* 確認ダイアログ（非オーナー配信先がいる場合のみ） */}
+      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <DialogContent className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[calc(100%-2rem)] sm:max-w-md p-6 gap-4">
+          <DialogHeader className="space-y-1">
+            <DialogDescription className="leading-6">
+              プラン変更のため契約者以外の配信先を削除します。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="mt-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setConfirmOpen(false)}
+              disabled={isLoading}
+            >
+              キャンセル
+            </Button>
+            <Button
+              type="button"
+              onClick={handleConfirmDelete}
+              disabled={isLoading}
+            >
+              {isLoading ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  実行中...
+                </>
+              ) : (
+                "OK"
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 削除完了 → ボタンでポータルへ進む */}
+      <Dialog open={postNoticeOpen} onOpenChange={setPostNoticeOpen}>
+        <DialogContent className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[calc(100%-2rem)] sm:max-w-md p-6 gap-4">
+          <DialogHeader className="space-y-1">
+            <DialogDescription className="leading-6">
+              契約者以外の配信先を削除しました。プラン変更に進んでください。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="mt-2">
+            <Button
+              type="button"
+              onClick={async () => {
+                setIsLoading(true);
+                try {
+                  await goPortal("change");
+                } catch (error) {
+                  console.error("manual redirect error:", error);
+                  toast({
+                    title: "エラーが発生しました",
+                    description:
+                      error instanceof Error
+                        ? error.message
+                        : "遷移に失敗しました。",
+                    variant: "destructive",
+                  });
+                } finally {
+                  setIsLoading(false);
+                }
+              }}
+              disabled={isLoading}
+            >
+              {isLoading ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  開いています...
+                </>
+              ) : (
+                "プラン変更を開く"
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

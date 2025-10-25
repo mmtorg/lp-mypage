@@ -18,13 +18,11 @@ function envList(name: string): string[] {
     .filter(Boolean);
 }
 
-// Collect all addon price ids we consider as seat add-ons
+// Collect addon price ids for seat add-ons (monthly only)
 const ADDON_PRICE_IDS = new Set(
   [
     process.env.STRIPE_ADDON_PRICE_ID_LITE_MONTHLY,
-    process.env.STRIPE_ADDON_PRICE_ID_LITE_YEARLY,
     process.env.STRIPE_ADDON_PRICE_ID_BUSINESS_MONTHLY,
-    process.env.STRIPE_ADDON_PRICE_ID_BUSINESS_YEARLY,
     ...envList("STRIPE_ADDON_PRICE_IDS"),
   ].filter((v): v is string => typeof v === "string" && !!v)
 );
@@ -103,15 +101,23 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // Used slots = number of recipients for the parent subscriptions (exclude pending_removal)
+    // Used slots = owner(1) + number of active recipients (exclude pending_removal)
+    // 契約者本人も配信先に含まれる仕様。
+    // ただし recipient_emails に既に契約者が含まれている場合は二重計上しない。
     let usedSlots = 0;
     if (parentIds.length > 0) {
       try {
         const { data: recs } = await supabaseAdmin
           .from("recipient_emails")
-          .select("id, pending_removal")
+          .select("id, email, pending_removal")
           .in("user_stripe_id", parentIds);
-        usedSlots = (recs ?? []).filter((r: any) => !r?.pending_removal).length;
+        const active = (recs ?? []).filter((r: any) => !r?.pending_removal);
+        const activeCount = active.length;
+        const hasOwner = active.some(
+          (r: any) => String(r?.email || "").toLowerCase() === email.toLowerCase()
+        );
+        const ownerCount = plan === "lite" || plan === "business" ? (hasOwner ? 0 : 1) : 0;
+        usedSlots = ownerCount + activeCount;
       } catch {}
     }
 

@@ -1,154 +1,153 @@
 "use client";
+export const dynamic = "force-static"; // 静的エクスポートを強制
 
-import { Suspense, useEffect, useMemo, useState, useRef } from "react";
+import { useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { getSupabaseBrowser } from "@/lib/supabase-browser";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Loader2 } from "lucide-react";
 
-const SESSION_EMAIL_KEY = "mypage:lastEmail:session";
+function parseHash(hash: string): Record<string, string> {
+  const h = hash.replace(/^#/, "");
+  const params = new URLSearchParams(h);
+  const out: Record<string, string> = {};
+  params.forEach((v, k) => (out[k] = v));
+  return out;
+}
 
-function AuthCallbackComponent() {
+function AuthCallbackInner() {
   const router = useRouter();
-  const params = useSearchParams();
-  const [mode, setMode] = useState<"loading" | "recovery" | "done" | "error">("loading");
-  const [message, setMessage] = useState<string>("処理中...");
-  const [pw1, setPw1] = useState("");
-  const [pw2, setPw2] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const timeoutRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (timeoutRef.current) {
-        window.clearTimeout(timeoutRef.current);
-      }
-    };
-  }, []);
-
-  const isRecovery = useMemo(() => {
-    try {
-      return (
-        (typeof window !== "undefined" && window.location.hash.includes("type=recovery")) ||
-        params.get("type") === "recovery"
-      );
-    } catch {
-      return false;
-    }
-  }, [params]);
+  const search = useSearchParams();
 
   useEffect(() => {
     const run = async () => {
       const supabase = getSupabaseBrowser();
+
+      const url = new URL(window.location.href);
+      const code = url.searchParams.get("code");
+      const token_hash = url.searchParams.get("token_hash");
+      const type = url.searchParams.get("type") || undefined;
+      const qError = url.searchParams.get("error");
+      const qErrorCode = url.searchParams.get("error_code");
+      const qErrorDesc = url.searchParams.get("error_description");
+
+      let encounteredError: string | null = null;
+
+      // Try PKCE code flow first
+      if (code) {
+        try {
+          const { error } = await supabase.auth.exchangeCodeForSession(code);
+          if (error) throw error;
+        } catch (e) {
+          // record error, then fallback to hash flow below
+          const msg = (e as Error)?.message;
+          if (msg) encounteredError = msg;
+        }
+      }
+
+      // If token_hash is present (email link verification flow), verify OTP
+      if (token_hash && type) {
+        try {
+          // whitelist expected OTP types and narrow the type for TypeScript
+          const allowedTypes = [
+            "recovery",
+            "signup",
+            "invite",
+            "magiclink",
+            "email",
+          ] as const;
+          type OtpType = (typeof allowedTypes)[number];
+          const otpType = allowedTypes.includes(type as OtpType)
+            ? (type as OtpType)
+            : undefined;
+
+          if (otpType) {
+            const { data, error } = await supabase.auth.verifyOtp({
+              type: otpType,
+              token_hash,
+            });
+            if (error) throw error;
+          }
+          // verifyOtp may or may not return a session depending on type
+        } catch (e) {
+          // Safely extract message from unknown error without using `any`
+          const err = e as unknown;
+          let msg: string | undefined;
+          if (err instanceof Error) {
+            msg = err.message;
+          } else if (
+            typeof err === "object" &&
+            err !== null &&
+            "message" in err &&
+            typeof (err as { message: unknown }).message === "string"
+          ) {
+            msg = (err as { message: string }).message;
+          } else if (typeof err === "string") {
+            msg = err;
+          }
+          if (msg) encounteredError = msg;
+          // ignore and continue to other methods
+        }
+      }
+
+      // Fallback: handle access_token/refresh_token in hash
+      const hashParams = parseHash(window.location.hash || "");
+      const access_token = hashParams["access_token"];
+      const refresh_token = hashParams["refresh_token"];
+      const hashType = hashParams["type"];
+
+      if (access_token && refresh_token) {
+        try {
+          await supabase.auth.setSession({ access_token, refresh_token });
+        } catch {}
+      }
+
+      // Determine session availability finally
+      let hasSession = false;
       try {
-        // Try code exchange (email confirmation links with ?code=)
-        await supabase.auth.exchangeCodeForSession(window.location.search);
+        const { data } = await supabase.auth.getSession();
+        hasSession = !!data.session;
       } catch {}
 
-      // If recovery, do not auto-redirect; show password reset form
-      if (isRecovery) {
-        setMode("recovery");
-        setMessage("");
+      const flow = search.get("flow") || type || hashType || "";
+
+      // Redirect based on flow
+      if (flow === "recovery") {
+        if (hasSession) {
+          router.replace("/auth/reset");
+        } else {
+          const err =
+            qErrorCode ||
+            qError ||
+            encounteredError ||
+            qErrorDesc ||
+            "auth_session_missing";
+          router.replace(`/mypage?reset_error=${encodeURIComponent(err)}`);
+        }
         return;
       }
 
-      try {
-        const { data: userRes } = await supabase.auth.getUser();
-        const email = userRes.user?.email ?? "";
-        if (email) {
-          try { sessionStorage.setItem(SESSION_EMAIL_KEY, email); } catch {}
-        }
-        setMode("done");
-        setMessage("サインインが完了しました。マイページへ移動します...");
-        timeoutRef.current = window.setTimeout(() => router.replace("/mypage"), 600);
-      } catch (e) {
-        setMode("error");
-        setMessage("サインインの完了処理に失敗しました。マイページから再度お試しください。");
+      if (hasSession) {
+        router.replace("/mypage?welcome=1");
+      } else {
+        const err =
+          qErrorCode ||
+          qError ||
+          encounteredError ||
+          qErrorDesc ||
+          "auth_session_missing";
+        router.replace(`/mypage?auth_error=${encodeURIComponent(err)}`);
       }
     };
+
     run();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isRecovery]);
+  }, [router, search]);
 
-  const submitRecovery = async () => {
-    const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/;
-    if (!pw1 || pw1 !== pw2) {
-      setErr("パスワードが一致しません");
-      return;
-    }
-    if (!passwordRegex.test(pw1)) {
-      setErr("パスワードは8文字以上で、大文字、小文字、数字をそれぞれ1つ以上含める必要があります。");
-      return;
-    }
-    setBusy(true);
-    setErr(null);
-    const supabase = getSupabaseBrowser();
-    try {
-      const { error } = await supabase.auth.updateUser({ password: pw1 });
-      if (error) throw error;
-      const { data: userRes } = await supabase.auth.getUser();
-      const email = userRes.user?.email ?? "";
-      if (email) {
-        try { sessionStorage.setItem(SESSION_EMAIL_KEY, email); } catch {}
-      }
-      setMode("done");
-      setMessage("パスワードを更新しました。マイページへ移動します...");
-      timeoutRef.current = window.setTimeout(() => router.replace("/mypage"), 600);
-    } catch (e) {
-      setErr(
-        e instanceof Error ? e.message : "パスワードの更新に失敗しました"
-      );
-      setBusy(false);
-    }
-  };
-
-  if (mode === "recovery") {
-    return (
-      <div className="min-h-screen flex items-center justify-center p-6">
-        <div className="w-full max-w-md rounded-xl border bg-white shadow p-6 space-y-4">
-          <h1 className="text-lg font-semibold">パスワードを再設定</h1>
-          <div className="space-y-2">
-            <Label htmlFor="pw1">新しいパスワード</Label>
-            <Input id="pw1" type="password" value={pw1} onChange={(e) => setPw1(e.target.value)} disabled={busy} />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="pw2">新しいパスワード（確認）</Label>
-            <Input id="pw2" type="password" value={pw2} onChange={(e) => setPw2(e.target.value)} disabled={busy} />
-          </div>
-          <p className="text-sm text-gray-500">パスワードは8文字以上で、大文字、小文字、数字をそれぞれ1つ以上含める必要があります。</p>
-          {err && <div className="rounded-lg bg-red-50 p-3 text-sm text-red-600">{err}</div>}
-          <div className="flex justify-end">
-            <Button onClick={submitRecovery} disabled={busy || !pw1 || pw1 !== pw2}>
-              {busy ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" /> 更新中...
-                </>
-              ) : (
-                "パスワードを更新"
-              )}
-            </Button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="min-h-screen flex items-center justify-center p-6">
-      <div className="rounded-xl border bg-white shadow p-6 text-center text-sm text-gray-700">
-        {message}
-      </div>
-    </div>
-  );
+  return null;
 }
 
 export default function AuthCallbackPage() {
   return (
-    <Suspense fallback={<div className="min-h-screen flex items-center justify-center p-6"><div className="rounded-xl border bg-white shadow p-6 text-center text-sm text-gray-700">処理中...</div></div>}>
-      <AuthCallbackComponent />
+    <Suspense fallback={null}>
+      <AuthCallbackInner />
     </Suspense>
   );
 }

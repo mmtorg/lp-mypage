@@ -3,6 +3,7 @@ import { supabaseAdmin } from "@/lib/supabase-admin";
 import { stripe } from "@/lib/stripe";
 
 export const runtime = "nodejs"; // Stripe SDK 利用のため Node 実行
+export const dynamic = "force-dynamic"; // request.url 等を使用するため動的扱い
 
 function appOrigin(req: NextRequest): string {
   return process.env.NEXT_PUBLIC_APP_ORIGIN || req.nextUrl.origin;

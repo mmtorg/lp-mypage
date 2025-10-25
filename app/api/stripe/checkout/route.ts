@@ -9,15 +9,8 @@ export const runtime = "nodejs";
 
 type Plan = "lite" | "business";
 
-const PRICE_ADDON_LITE_MONTHLY = process.env.STRIPE_ADDON_PRICE_ID_LITE_MONTHLY!;
-const PRICE_ADDON_LITE_YEARLY = process.env.STRIPE_ADDON_PRICE_ID_LITE_YEARLY!;
-const PRICE_ADDON_BUSINESS_MONTHLY = process.env.STRIPE_ADDON_PRICE_ID_BUSINESS_MONTHLY!;
-const PRICE_ADDON_BUSINESS_YEARLY = process.env.STRIPE_ADDON_PRICE_ID_BUSINESS_YEARLY!;
-
 const PL_LITE_MONTHLY = process.env.NEXT_PUBLIC_PL_ADDON_LITE_SEAT_MONTHLY || "";
-const PL_LITE_YEARLY = process.env.NEXT_PUBLIC_PL_ADDON_LITE_SEAT_YEARLY || "";
 const PL_BUSINESS_MONTHLY = process.env.NEXT_PUBLIC_PL_ADDON_BUS_SEAT_MONTHLY || "";
-const PL_BUSINESS_YEARLY = process.env.NEXT_PUBLIC_PL_ADDON_BUS_SEAT_YEARLY || "";
 
 const ACTIVE_STATUSES: Stripe.Subscription.Status[] = [
   "trialing",
@@ -26,12 +19,12 @@ const ACTIVE_STATUSES: Stripe.Subscription.Status[] = [
   "unpaid",
 ];
 
-function pickPaymentLink(plan: Plan, interval?: string | null) {
-  const isYearly = interval === "year";
+function pickPaymentLink(plan: Plan, _interval?: string | null) {
+  // 追加購入は月額に統一（ベースが年額でも月額のリンクを返す）
   if (plan === "business") {
-    return { paymentLink: isYearly ? PL_BUSINESS_YEARLY : PL_BUSINESS_MONTHLY, productLabel: "Business : 配信先追加" } as const;
+    return { paymentLink: PL_BUSINESS_MONTHLY, productLabel: "Business : 配信先追加" } as const;
   }
-  return { paymentLink: isYearly ? PL_LITE_YEARLY : PL_LITE_MONTHLY, productLabel: "Lite : 配信先追加" } as const;
+  return { paymentLink: PL_LITE_MONTHLY, productLabel: "Lite : 配信先追加" } as const;
 }
 
 async function getStripeCustomerIdFromDB(email?: string) {
@@ -395,6 +388,9 @@ export async function POST(req: NextRequest) {
       const portal = await stripe.billingPortal.sessions.create({
         customer: stripeCustomerId,
         return_url: `${baseUrl}/mypage?updated=1`,
+        ...(process.env.STRIPE_PORTAL_CONFIG_BILLING
+          ? { configuration: process.env.STRIPE_PORTAL_CONFIG_BILLING }
+          : {}),
       });
       return NextResponse.json({
         updated: true,
@@ -418,6 +414,9 @@ export async function POST(req: NextRequest) {
       const portal = await stripe.billingPortal.sessions.create({
         customer: stripeCustomerId,
         return_url: `${baseUrl}/mypage?updated=1`,
+        ...(process.env.STRIPE_PORTAL_CONFIG_BILLING
+          ? { configuration: process.env.STRIPE_PORTAL_CONFIG_BILLING }
+          : {}),
       });
       return NextResponse.json({
         updated: true,

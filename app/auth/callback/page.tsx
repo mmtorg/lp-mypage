@@ -1,6 +1,7 @@
 "use client";
+export const dynamic = "force-static"; // 静的エクスポートを強制
 
-import { useEffect } from "react";
+import { useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { getSupabaseBrowser } from "@/lib/supabase-browser";
 
@@ -12,7 +13,7 @@ function parseHash(hash: string): Record<string, string> {
   return out;
 }
 
-export default function AuthCallbackPage() {
+function AuthCallbackInner() {
   const router = useRouter();
   const search = useSearchParams();
 
@@ -141,4 +142,12 @@ export default function AuthCallbackPage() {
   }, [router, search]);
 
   return null;
+}
+
+export default function AuthCallbackPage() {
+  return (
+    <Suspense fallback={null}>
+      <AuthCallbackInner />
+    </Suspense>
+  );
 }

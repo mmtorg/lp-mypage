@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { stripe } from "@/lib/stripe";
 import { supabaseAdmin } from "@/lib/supabase-admin";
+export const dynamic = "force-dynamic"; // request.url を参照するため動的
 
 /**
  * セッションの user_id を最優先で使用し、互換として ?user_id= / ?email= も許容

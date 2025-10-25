@@ -72,6 +72,16 @@ export function toJapaneseAuthErrorMessage(
   if (m.includes("invalid oauth") || m.includes("oauth callback")) {
     return "外部サービスでの認証に失敗しました。時間をおいて再度お試しください。";
   }
+  // 例: "For security purposes, you can only request this after 17 seconds."
+  if (
+    m.includes("for security purposes, you can only request this after")
+  ) {
+    const secMatch = msg.match(/after\s+(\d+)\s*seconds?/i);
+    if (secMatch) {
+      return `セキュリティのため、再リクエストは${secMatch[1]}秒後に可能です。`;
+    }
+    return "セキュリティのため、一定時間後に再リクエストが可能です。";
+  }
 
   // 上記に該当しなければ元メッセージをそのまま（英語のまま）返すか、フォールバック
   return msg || defaultMsg;

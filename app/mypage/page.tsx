@@ -324,7 +324,9 @@ export default function MyPage() {
         className={`mx-auto ${sub?.is_trialing ? "max-w-5xl" : "max-w-2xl"}`}
       >
         <div className="mb-8 text-center">
-          <h1 className="mb-2 text-3xl font-bold text-gray-900">マイページ</h1>
+          <h1 className="mb-2 text-3xl font-bold text-gray-900">
+            マイページ（有料プランユーザー限定）
+          </h1>
         </div>
         {/* 成功メッセージは useEffect で処理済み */}
 
@@ -347,7 +349,9 @@ export default function MyPage() {
           ) : (
             <Card className="mb-6 rounded-2xl border-0 shadow-md">
               <CardHeader>
-                <CardTitle className="text-xl">メールアドレスを入力</CardTitle>
+                <CardTitle className="text-xl">
+                  ご契約メールアドレスを入力
+                </CardTitle>
               </CardHeader>
               <CardContent>
                 <form onSubmit={handleCheck} className="space-y-4">
@@ -379,7 +383,7 @@ export default function MyPage() {
                         Loading...
                       </>
                     ) : (
-                      "プランを取得"
+                      "マイページへ"
                     )}
                   </Button>
                 </form>
@@ -477,7 +481,9 @@ export default function MyPage() {
                       )
                     );
                     try {
-                      const { isEmailNotConfirmedError } = await import("@/lib/auth-errors");
+                      const { isEmailNotConfirmedError } = await import(
+                        "@/lib/auth-errors"
+                      );
                       setEmailNotConfirmed(isEmailNotConfirmedError(err));
                     } catch {}
                   } finally {
@@ -619,7 +625,7 @@ export default function MyPage() {
               <Card className="rounded-2xl border-0 shadow-md">
                 <CardHeader className="pb-3">
                   <CardTitle className="text-xl">
-                    取得に失敗しました。
+                    メールアドレスが正しくありません
                   </CardTitle>
                   <CardDescription>{sub.email || email}</CardDescription>
                 </CardHeader>
@@ -692,27 +698,17 @@ function AuthGate({
   if (stage === "emailSent") {
     return (
       <Card className="rounded-2xl border-0 shadow-md">
-        <CardHeader>
+        <CardHeader className="space-y-4">
           <CardTitle className="text-xl">
             {emailSentType === "reset"
               ? "パスワード再設定メールを送信しました"
               : "認証メールを送信しました"}
           </CardTitle>
           <CardDescription>
-            {email} 宛に
-            {emailSentType === "reset"
-              ? "パスワード再設定メール"
-              : "認証メール"}
-            を送信しました。
+            メールが見つからない場合には、迷惑メールフォルダやプロモーションタブをご確認ください。
           </CardDescription>
         </CardHeader>
-        <CardContent>
-          <div className="flex items-center justify-between">
-            <Button variant="outline" onClick={onReset}>
-              戻る
-            </Button>
-          </div>
-        </CardContent>
+        <CardContent></CardContent>
       </Card>
     );
   }
@@ -724,7 +720,7 @@ function AuthGate({
     return (
       <Card className="rounded-2xl border-0 shadow-md">
         <CardHeader>
-          <CardTitle className="text-xl">アカウント登録</CardTitle>
+          <CardTitle className="text-xl">パスワード設定</CardTitle>
           <CardDescription>
             {email} のアカウントを作成します。パスワードを設定してください。
           </CardDescription>
@@ -821,7 +817,8 @@ function AuthGate({
             )}
 
             {/* 未確認メールのときは再送導線を表示 */}
-            {(resendBusy || emailNotConfirmed ||
+            {(resendBusy ||
+              emailNotConfirmed ||
               (typeof error === "string" &&
                 (error.includes("確認が完了していません") ||
                   error.includes("メール認証が完了していません")))) && (
@@ -865,7 +862,7 @@ function AuthGate({
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" /> 送信中...
                   </>
                 ) : (
-                  "登録する"
+                  "次へ"
                 )}
               </Button>
             </div>
@@ -919,24 +916,6 @@ function AuthGate({
               </div>
             </div>
 
-            {/* ▼ 追加：バリデーション内容の可視化 */}
-            <div
-              className="rounded-md bg-gray-50 p-3 text-sm"
-              role="status"
-              aria-live="polite"
-            >
-              <ul className="space-y-1">
-                <li
-                  className={
-                    isValidPassword ? "text-green-700" : "text-red-700"
-                  }
-                >
-                  {isValidPassword ? "✓" : "✗"}{" "}
-                  パスワードは8文字以上・大小英字と数字を各1文字以上含む
-                </li>
-              </ul>
-            </div>
-
             {error && (
               <div className="rounded-lg bg-red-50 p-3 text-sm text-red-600">
                 {error}
@@ -964,7 +943,8 @@ function AuthGate({
             </div>
 
             <div className="text-right">
-              {resendBusy || emailNotConfirmed ||
+              {resendBusy ||
+              emailNotConfirmed ||
               (typeof error === "string" &&
                 (error.includes("確認が完了していません") ||
                   error.includes("メール認証が完了していません"))) ? (
@@ -1270,6 +1250,7 @@ function ResolvedView({
               {Math.max(0, Number(recipLimits.remaining_slots || 0))}
               <span className="ml-3 text-gray-500">
                 （ 追加購入: {Number(recipLimits.addon_slots || 0)}）
+                ※追加購入は月払いです
               </span>
             </div>
           )}
@@ -1865,7 +1846,7 @@ function AddRecipientsModal({
                   )}
                   <div>配信先追加購入：{payableCountPlanned}件</div>
                   <div>
-                    追加購入金額 (消費税10%込)：
+                    追加購入金額 (月額・消費税10%込)：
                     {formatCurrency(
                       (unitAmount || 0) * payableCountPlanned,
                       currency

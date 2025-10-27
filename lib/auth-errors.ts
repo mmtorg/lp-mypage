@@ -1,8 +1,11 @@
-// Supabase Auth の英語エラーメッセージを日本語に変換するユーティリティ
+﻿// Supabase Auth の英語エラーメッセージを日本語に変換するユーティリティ
 // 想定メッセージの揺れに対応するため、一部は部分一致で判定します。
 
 // エラーオブジェクトから code / message を安全に取り出す
-export function getAuthErrorInfo(err: unknown): { code?: string; message?: string } {
+export function getAuthErrorInfo(err: unknown): {
+  code?: string;
+  message?: string;
+} {
   if (typeof err === "string") return { message: err };
   if (err && typeof err === "object") {
     const anyErr: any = err as any;
@@ -10,7 +13,8 @@ export function getAuthErrorInfo(err: unknown): { code?: string; message?: strin
       (typeof anyErr.code === "string" && anyErr.code) ||
       (typeof anyErr.error === "string" && anyErr.error) ||
       undefined;
-    const message = typeof anyErr.message === "string" ? anyErr.message : undefined;
+    const message =
+      typeof anyErr.message === "string" ? anyErr.message : undefined;
     return { code, message };
   }
   return {};
@@ -57,6 +61,8 @@ export function toJapaneseAuthErrorMessage(
         return "リクエストが多すぎます。しばらく時間をおいてからお試しください。";
       case "unexpected_failure":
         return "サーバーで問題が発生しました。時間をおいて再度お試しください。";
+      case "otp_expired":
+        return "リンクの有効期限が切れているか無効です。もう一度お試しください。";
     }
   } catch {}
 
@@ -82,8 +88,8 @@ export function toJapaneseAuthErrorMessage(
   if (
     m.includes("token has expired") ||
     m.includes("token is expired") ||
-    m.includes("invalid or expired") ||
-    m.includes("Email link is invalid or has expired")
+    m.includes("invalid or has expired") ||
+    m.includes("email link is invalid or has expired")
   ) {
     return "リンクの有効期限が切れているか無効です。もう一度お試しください。";
   }
@@ -114,9 +120,7 @@ export function toJapaneseAuthErrorMessage(
     return "外部サービスでの認証に失敗しました。時間をおいて再度お試しください。";
   }
   // 例: "For security purposes, you can only request this after 17 seconds."
-  if (
-    m.includes("for security purposes, you can only request this after")
-  ) {
+  if (m.includes("for security purposes, you can only request this after")) {
     const secMatch = msg.match(/after\s+(\d+)\s*seconds?/i);
     if (secMatch) {
       return `セキュリティのため、再リクエストは${secMatch[1]}秒後に可能です。`;
@@ -139,11 +143,13 @@ export function isEmailNotConfirmedError(err: unknown): boolean {
       const code =
         (typeof anyErr.code === "string" && anyErr.code) ||
         (typeof anyErr.error === "string" && anyErr.error);
-      if (typeof code === "string" && code.toLowerCase() === "email_not_confirmed") {
+      if (
+        typeof code === "string" &&
+        code.toLowerCase() === "email_not_confirmed"
+      ) {
         return true;
       }
-      const msg =
-        (typeof anyErr.message === "string" && anyErr.message) || "";
+      const msg = (typeof anyErr.message === "string" && anyErr.message) || "";
       if (msg && msg.toLowerCase().includes("email not confirmed")) {
         return true;
       }

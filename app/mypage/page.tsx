@@ -1250,7 +1250,7 @@ function ResolvedView({
               {Math.max(0, Number(recipLimits.remaining_slots || 0))}
               <span className="ml-3 text-gray-500">
                 （ 追加購入: {Number(recipLimits.addon_slots || 0)}）
-                ※追加購入は月払いです
+                ※追加購入は月払いのみ
               </span>
             </div>
           )}

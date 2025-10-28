@@ -279,6 +279,13 @@ export default function MyPage() {
       const data = (await res.json()) as SubscriptionData;
       setSub(data);
 
+      // 枠情報の取得（lite/business のみ）
+      if (data.current_plan === "lite" || data.current_plan === "business") {
+        loadLimits(email.trim());
+      } else {
+        setRecipLimits(null);
+      }
+
       try {
         const hasPaidPlan =
           data.current_plan === "lite" || data.current_plan === "business";
@@ -1333,7 +1340,7 @@ function ResolvedView({
             サブスクリプションの管理
           </h3>
           <p className="text-sm text-gray-600">
-            プラン変更・解約時には契約者以外のメール配信先が削除されます。
+            プラン変更時には契約者以外のメール配信先が削除されます。
           </p>
 
           {/* 「配信先の管理」と同じレイアウト + ボタン反転カラー */}

@@ -102,7 +102,27 @@ export function PortalButton({
       return;
     }
 
-    // mode === "change" | "cancel": オーナー以外の配信先があるか事前チェック
+    // プラン解約は事前削除せずにポータルへ直行（恒久対応）
+    if (mode === "cancel") {
+      try {
+        setIsLoading(true);
+        await goPortal("cancel");
+      } catch (error) {
+        console.error("Portal redirect error:", error);
+        toast({
+          title: "エラーが発生しました",
+          description:
+            error instanceof Error
+              ? error.message
+              : "ポータル遷移に失敗しました。しばらくしてから再度お試しください。",
+          variant: "destructive",
+        });
+        setIsLoading(false);
+      }
+      return;
+    }
+
+    // mode === "change": オーナー以外の配信先があるか事前チェック
     try {
       setIsLoading(true);
       const owner = (email || "").trim();

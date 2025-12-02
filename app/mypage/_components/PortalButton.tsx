@@ -10,7 +10,6 @@ import {
   DialogDescription,
   DialogFooter,
   DialogHeader,
-  DialogTitle,
 } from "@/components/ui/dialog";
 
 export type PortalMode = "change" | "cancel" | "billing";
@@ -18,38 +17,48 @@ export type PortalMode = "change" | "cancel" | "billing";
 export type PortalButtonProps = {
   /** カスタマーポータルを開く対象のオーナーEmail（未指定でも可） */
   email?: string;
-  /** 目的：プラン変更 / キャンセル / 請求情報 */
+  /** 目的：プラン/支払期間の変更 / キャンセル / 請求情報 */
   mode: PortalMode;
   /** ボタン表示ラベル（未指定なら mode に応じた既定文言） */
   label?: string;
   /** 幅を100%にするか */
   fullWidth?: boolean;
+  /** ポータルを新しいタブで開くか */
+  openInNewTab?: boolean;
 };
 
 /**
  * カスタマーポータル遷移ボタン
  * - mode==="change" のとき、オーナー以外の配信先が存在する場合は削除確認を挟む
- * - 削除完了後はモーダルで告知し、ボタン押下でポータル/プラン変更画面へ遷移
+ * - 削除完了後はモーダルで告知し、ボタン押下でポータル/プラン/支払期間の変更画面へ遷移
  */
 export function PortalButton({
   email,
   mode,
   label,
   fullWidth = true,
+  openInNewTab = false,
 }: PortalButtonProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [nonOwnerEmails, setNonOwnerEmails] = useState<string[]>([]);
   const [postNoticeOpen, setPostNoticeOpen] = useState(false);
-  const [pendingPortalUrl, setPendingPortalUrl] = useState<string | null>(null);
   const { toast } = useToast();
 
   // カスタマーポータルへ遷移
   const goPortal = useCallback(
     async (purpose: PortalMode, fallbackUrl?: string | null) => {
       try {
+        const openUrl = (url: string) => {
+          if (openInNewTab) {
+            window.open(url, "_blank", "noopener,noreferrer");
+          } else {
+            window.location.assign(url);
+          }
+        };
+
         if (fallbackUrl) {
-          window.location.assign(fallbackUrl);
+          openUrl(fallbackUrl);
           return;
         }
         const response = await fetch("/api/stripe/portal", {
@@ -70,12 +79,12 @@ export function PortalButton({
         if (!data?.url) {
           throw new Error("有効なポータルURLを取得できませんでした。");
         }
-        window.location.assign(String(data.url));
+        openUrl(String(data.url));
       } catch (error) {
         throw error;
       }
     },
-    [email]
+    [email, openInNewTab]
   );
 
   // ボタン押下時の挙動
@@ -84,8 +93,8 @@ export function PortalButton({
 
     // 請求（billing）はそのままポータルへ
     if (mode === "billing") {
+      setIsLoading(true);
       try {
-        setIsLoading(true);
         await goPortal("billing");
       } catch (error) {
         console.error("Portal redirect error:", error);
@@ -97,15 +106,16 @@ export function PortalButton({
               : "ポータル遷移に失敗しました。しばらくしてから再度お試しください。",
           variant: "destructive",
         });
+      } finally {
         setIsLoading(false);
       }
       return;
     }
 
-    // プラン解約は事前削除せずにポータルへ直行（恒久対応）
+    // 解約は事前削除せずにポータルへ直行（恒久対応）
     if (mode === "cancel") {
+      setIsLoading(true);
       try {
-        setIsLoading(true);
         await goPortal("cancel");
       } catch (error) {
         console.error("Portal redirect error:", error);
@@ -117,6 +127,7 @@ export function PortalButton({
               : "ポータル遷移に失敗しました。しばらくしてから再度お試しください。",
           variant: "destructive",
         });
+      } finally {
         setIsLoading(false);
       }
       return;
@@ -162,7 +173,6 @@ export function PortalButton({
       // 非オーナー配信先がいる → 確認ダイアログを表示
       setNonOwnerEmails(Array.from(new Set(others)));
       setConfirmOpen(true);
-      setIsLoading(false);
     } catch (error) {
       console.error("precheck error:", error);
       toast({
@@ -173,6 +183,7 @@ export function PortalButton({
             : "事前チェックに失敗しました。しばらくしてから再度お試しください。",
         variant: "destructive",
       });
+    } finally {
       setIsLoading(false);
     }
   };
@@ -197,18 +208,12 @@ export function PortalButton({
         throw new Error(data?.error || "配信先の削除に失敗しました。");
       }
 
-      const data = await res.json();
-      const portalUrl: string | undefined = data?.portalUrl
-        ? String(data.portalUrl)
-        : undefined;
-
       // 削除完了 → 告知モーダルを表示（自動リダイレクトしない）
       setConfirmOpen(false);
       setPostNoticeOpen(true);
-      // ここでは「プラン変更/解約」いずれのケースでも
+      // ここでは「プラン/支払期間の変更/解約」いずれのケースでも
       // 明示的に次のポータル目的を指定して遷移（POST）する
       // API 仕様上 GET は 405 のため、手動遷移時も goPortal(mode) を使う
-      setPendingPortalUrl(null);
       setIsLoading(false);
     } catch (error) {
       console.error("delete/redirect error:", error);
@@ -232,7 +237,7 @@ export function PortalButton({
       ? "サブスクリプションをキャンセル"
       : "請求情報（支払い方法・請求書）";
 
-  const purposeWord = mode === "cancel" ? "プラン解約" : "プラン変更";
+  const purposeWord = mode === "cancel" ? "解約" : "プラン/支払期間の変更";
 
   const aria = label || defaultLabel;
 

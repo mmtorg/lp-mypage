@@ -121,7 +121,7 @@ export default function MyPage() {
           e
         )}&force=1&_=${Date.now()}`
       );
-      if (!res.ok) throw new Error("購読情報の取得に失敗しました。");
+      if (!res.ok) throw new Error("契約情報の取得に失敗しました。");
       const data = (await res.json()) as SubscriptionData;
       setSub(data);
       setError(null);
@@ -275,7 +275,7 @@ export default function MyPage() {
           email.trim()
         )}`
       );
-      if (!res.ok) throw new Error("購読情報の取得に失敗しました。");
+      if (!res.ok) throw new Error("契約情報の取得に失敗しました。");
       const data = (await res.json()) as SubscriptionData;
       setSub(data);
 
@@ -344,7 +344,7 @@ export default function MyPage() {
             <Card className="mb-6 rounded-2xl border-0 shadow-md">
               <CardHeader>
                 <CardTitle className="text-xl">読み込み中...</CardTitle>
-                <CardDescription>購読状況を取得しています。</CardDescription>
+                <CardDescription>契約状況を取得しています。</CardDescription>
               </CardHeader>
               <CardContent>
                 <div className="flex items-center justify-center py-6 text-gray-600">
@@ -1163,7 +1163,7 @@ function ResolvedView({
         <CardContent className="space-y-12">
           <section className="space-y-4">
             <h3 className="border-b border-gray-200 pb-2 text-xl font-semibold text-gray-900">
-              プラン変更
+              プラン/支払期間の変更
             </h3>
             <div>
               <script
@@ -1179,7 +1179,7 @@ function ResolvedView({
           </section>
           <section className="space-y-4">
             <h3 className="border-b border-gray-200 pb-2 text-xl font-semibold text-gray-900">
-              サブスクリプションの管理
+              ご契約の管理
             </h3>
             <div className="space-y-2 rounded-md bg-gray-50 p-4 text-sm text-gray-700">
               <p>
@@ -1247,9 +1247,54 @@ function ResolvedView({
         </div>
       </CardHeader>
       <CardContent className="space-y-12">
-        <section className="space-y-4">
+        <section className="space-y-3">
           <h3 className="border-b border-gray-200 pb-2 text-xl font-semibold text-gray-900">
             メール配信先
+          </h3>
+          {sortedRecipients.length > 0 ? (
+            <ul className="space-y-2 text-gray-700">
+              {sortedRecipients.map((recipient) => (
+                <li
+                  key={recipient.email}
+                  className="flex items-center justify-between rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm"
+                >
+                  <span>
+                    {recipient.email}
+                    {recipient.pending_removal ? (
+                      <span className="ml-2 text-xs text-red-600">
+                        削除予定
+                      </span>
+                    ) : null}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    {recipient.email.toLowerCase() ===
+                      email.trim().toLowerCase() && (
+                      <span className="inline-flex items-center rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700 ring-1 ring-inset ring-blue-200">
+                        契約者
+                      </span>
+                    )}
+                    {recipient.email.toLowerCase() !==
+                      email.trim().toLowerCase() &&
+                      (recipient.created_via ?? "").toLowerCase() ===
+                        "addon" && (
+                        <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-600 ring-1 ring-inset ring-gray-200">
+                          追加購入
+                        </span>
+                      )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-sm text-gray-600">
+              配信先メールアドレスは登録されていません。
+            </p>
+          )}
+        </section>
+
+        <section className="space-y-4">
+          <h3 className="border-b border-gray-200 pb-2 text-xl font-semibold text-gray-900">
+            配信先の管理
           </h3>
           {recipLimits && (
             <div className="rounded-md bg-gray-50 p-3 text-sm text-gray-700">
@@ -1257,56 +1302,10 @@ function ResolvedView({
               {Math.max(0, Number(recipLimits.remaining_slots || 0))}
               <span className="ml-3 text-gray-500">
                 （ 追加購入: {Number(recipLimits.addon_slots || 0)}）
-                ※追加購入は月払いのみ
               </span>
             </div>
           )}
-        </section>
 
-        {sortedRecipients.length > 0 ? (
-          <ul className="space-y-2 text-gray-700">
-            {sortedRecipients.map((recipient) => (
-              <li
-                key={recipient.email}
-                className="flex items-center justify-between rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm"
-              >
-                <span>
-                  {recipient.email}
-                  {recipient.pending_removal ? (
-                    <span className="ml-2 text-xs text-red-600">削除予定</span>
-                  ) : null}
-                </span>
-                <div className="flex items-center gap-2">
-                  {recipient.email.toLowerCase() ===
-                    email.trim().toLowerCase() && (
-                    <span className="inline-flex items-center rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700 ring-1 ring-inset ring-blue-200">
-                      契約者
-                    </span>
-                  )}
-                  {recipient.email.toLowerCase() !==
-                    email.trim().toLowerCase() &&
-                    (recipient.created_via ?? "").toLowerCase() === "addon" && (
-                      <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-600 ring-1 ring-inset ring-gray-200">
-                        追加購入
-                      </span>
-                    )}
-                </div>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="text-sm text-gray-600">
-            配信先メールアドレスは登録されていません。
-          </p>
-        )}
-
-        <section className="space-y-4">
-          <h3 className="border-b border-gray-200 pb-2 text-xl font-semibold text-gray-900">
-            配信先の管理
-          </h3>
-          <p className="text-sm text-gray-600">
-            管理者のメールアドレスは変更・削除出来ません。
-          </p>
           <div className="grid gap-2 sm:grid-cols-3">
             <AddRecipientsModal
               email={email}
@@ -1333,31 +1332,48 @@ function ResolvedView({
               onSuccess={setRecipientList}
             />
           </div>
+          <p className="text-sm text-gray-600">
+            契約者のメールアドレスは変更・削除出来ません。
+          </p>
         </section>
 
         <section className="space-y-4">
           <h3 className="border-b border-gray-200 pb-2 text-xl font-semibold text-gray-900">
-            サブスクリプションの管理
+            ご契約の管理
           </h3>
-          <p className="text-sm text-gray-600">
-            プラン変更時には契約者以外のメール配信先が削除されます。
-          </p>
-
           {/* 「配信先の管理」と同じレイアウト + ボタン反転カラー */}
           <div className="grid gap-2 sm:grid-cols-3">
-            {/* プラン変更 */}
+            {/* クレカ変更/支払履歴 */}
             <div className="w-full">
-              <PortalButton email={email} mode="change" label="プラン変更" />
+              <PortalButton
+                email={email}
+                mode="billing"
+                label="クレカ変更/支払履歴"
+                openInNewTab
+              />
             </div>
 
-            {/* プラン解約 */}
-            <div className="w-full">
-              <PortalButton email={email} mode="cancel" label="プラン解約" />
+            {/* プラン/支払期間の変更 */}
+            <div className="w-full flex flex-col gap-1">
+              <PortalButton
+                email={email}
+                mode="change"
+                label="プラン/支払期間の変更"
+                openInNewTab
+              />
+              <p className="text-sm text-gray-600">
+                プラン変更時には契約者以外のメール配信先が削除されます。
+              </p>
             </div>
 
-            {/* 請求・決済 */}
+            {/* 解約 */}
             <div className="w-full">
-              <PortalButton email={email} mode="billing" label="請求・決済" />
+              <PortalButton
+                email={email}
+                mode="cancel"
+                label="解約"
+                openInNewTab
+              />
             </div>
           </div>
         </section>
@@ -1953,7 +1969,7 @@ function AddRecipientsModal({
             {paidCount > 0 && portalUrl ? (
               <Button asChild>
                 <a href={portalUrl} target="_blank" rel="noopener noreferrer">
-                  請求・決済を確認
+                  クレカ変更/支払履歴を確認
                 </a>
               </Button>
             ) : null}
@@ -2506,7 +2522,7 @@ function DeleteRecipientsModal({
             {deletedPaidCount > 0 && portalUrl && (
               <Button asChild>
                 <a href={portalUrl} target="_blank" rel="noopener noreferrer">
-                  請求・決済を確認
+                  クレカ変更/支払履歴を確認
                 </a>
               </Button>
             )}

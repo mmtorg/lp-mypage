@@ -1247,95 +1247,17 @@ function ResolvedView({
         </div>
       </CardHeader>
       <CardContent className="space-y-12">
-        <section className="space-y-3">
-          <h3 className="border-b border-gray-200 pb-2 text-xl font-semibold text-gray-900">
-            メール配信先
-          </h3>
-          {sortedRecipients.length > 0 ? (
-            <ul className="space-y-2 text-gray-700">
-              {sortedRecipients.map((recipient) => (
-                <li
-                  key={recipient.email}
-                  className="flex items-center justify-between rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm"
-                >
-                  <span>
-                    {recipient.email}
-                    {recipient.pending_removal ? (
-                      <span className="ml-2 text-xs text-red-600">
-                        削除予定
-                      </span>
-                    ) : null}
-                  </span>
-                  <div className="flex items-center gap-2">
-                    {recipient.email.toLowerCase() ===
-                      email.trim().toLowerCase() && (
-                      <span className="inline-flex items-center rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700 ring-1 ring-inset ring-blue-200">
-                        契約者
-                      </span>
-                    )}
-                    {recipient.email.toLowerCase() !==
-                      email.trim().toLowerCase() &&
-                      (recipient.created_via ?? "").toLowerCase() ===
-                        "addon" && (
-                        <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-600 ring-1 ring-inset ring-gray-200">
-                          追加購入
-                        </span>
-                      )}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="text-sm text-gray-600">
-              配信先メールアドレスは登録されていません。
-            </p>
-          )}
-        </section>
-
-        <section className="space-y-4">
-          <h3 className="border-b border-gray-200 pb-2 text-xl font-semibold text-gray-900">
-            配信先の管理
-          </h3>
-          {recipLimits && (
-            <div className="rounded-md bg-gray-50 p-3 text-sm text-gray-700">
-              残り無料枠:{" "}
-              {Math.max(0, Number(recipLimits.remaining_slots || 0))}
-              <span className="ml-3 text-gray-500">
-                （ 追加購入: {Number(recipLimits.addon_slots || 0)}）
-              </span>
-            </div>
-          )}
-
-          <div className="grid gap-2 sm:grid-cols-3">
-            <AddRecipientsModal
-              email={email}
-              plan={plan}
-              unitAmount={currentUnitAmount}
-              currency={currentCurrency}
-              billingInterval={currentBillingInterval}
-              existingRecipients={sortedRecipients}
-              remainingSlots={recipLimits?.remaining_slots}
-              onRefetch={() => onRefetch?.(email)}
-            />
-            <EditRecipientModal
-              ownerEmail={email}
-              addonRecipients={editableRecipients.filter(
-                (r) => r.email.toLowerCase() !== email.trim().toLowerCase()
-              )}
-              onSuccess={setRecipientList}
-            />
-            <DeleteRecipientsModal
-              ownerEmail={email}
-              addonRecipients={editableRecipients.filter(
-                (r) => r.email.toLowerCase() !== email.trim().toLowerCase()
-              )}
-              onSuccess={setRecipientList}
-            />
-          </div>
-          <p className="text-sm text-gray-600">
-            契約者のメールアドレスは変更・削除出来ません。
-          </p>
-        </section>
+        <RecipientsInlineEditor
+          ownerEmail={email}
+          plan={plan}
+          sortedRecipients={sortedRecipients}
+          recipLimits={recipLimits}
+          unitAmount={currentUnitAmount}
+          currency={currentCurrency}
+          billingInterval={currentBillingInterval}
+          onRecipientsChange={setRecipientList}
+          onRefetch={onRefetch}
+        />
 
         <section className="space-y-4">
           <h3 className="border-b border-gray-200 pb-2 text-xl font-semibold text-gray-900">
@@ -1382,189 +1304,479 @@ function ResolvedView({
   );
 }
 
-/** ----------------- AddRecipientsModal ----------------- */
-
-type AddRecipientsModalProps = {
-  email: string;
+type RecipientsInlineEditorProps = {
+  ownerEmail: string;
   plan: Plan;
+  sortedRecipients: RecipientInfo[];
+  recipLimits?: {
+    plan: Plan;
+    base_slots: number;
+    addon_slots: number;
+    used_slots: number;
+    remaining_slots: number;
+  } | null;
   unitAmount?: number;
   currency?: string;
   billingInterval?: "month" | "year";
-  existingRecipients: RecipientInfo[];
-  remainingSlots?: number;
-  onRefetch?: () => void | Promise<void>;
+  onRecipientsChange: (recipients: RecipientInfo[]) => void;
+  onRefetch?: (targetEmail?: string) => void | Promise<void>;
 };
 
-function AddRecipientsModal({
-  email,
+function RecipientsInlineEditor({
+  ownerEmail,
   plan,
+  sortedRecipients,
+  recipLimits,
   unitAmount,
   currency,
   billingInterval,
-  existingRecipients,
-  remainingSlots,
+  onRecipientsChange,
   onRefetch,
-}: AddRecipientsModalProps) {
-  const [open, setOpen] = useState(false);
-  const [count, setCount] = useState(1);
-  const [countInput, setCountInput] = useState("1");
-  const [emails, setEmails] = useState<string[]>([""]);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const [postUpdateOpen, setPostUpdateOpen] = useState(false);
-  const [updatedProductName, setUpdatedProductName] = useState<string>("");
-  const [updatedQuantity, setUpdatedQuantity] = useState<number>(0);
-  const [portalUrl, setPortalUrl] = useState<string>("");
-  const [postCheckoutOpen, setPostCheckoutOpen] = useState(false);
-  const [checkoutUrl, setCheckoutUrl] = useState<string>("");
-  const [suspendReset, setSuspendReset] = useState(false);
-  const [prechecking, setPrechecking] = useState(false);
-  const [awaitingCheckoutRedirect, setAwaitingCheckoutRedirect] =
-    useState(false);
-  // 無料/有料の分割用
-  const [freeCountPlanned, setFreeCountPlanned] = useState(0);
-  const [payableCountPlanned, setPayableCountPlanned] = useState(0);
-  const [freeEmailsPlanned, setFreeEmailsPlanned] = useState<string[]>([]);
-  const [paidEmailsPlanned, setPaidEmailsPlanned] = useState<string[]>([]);
-  const [paidCount, setPaidCount] = useState<number>(0); // 保存完了後の追加購入数
-  const [freeCount, setFreeCount] = useState<number>(0); // 無料枠で追加できた件数
+}: RecipientsInlineEditorProps) {
+  const normalizedOwner = ownerEmail.trim().toLowerCase();
+  const baseSlotCount = plan === "business" ? 4 : 1;
 
-  const isFirstTimeAddonPurchase = useMemo(
+  const ownerRecipient = useMemo(
     () =>
-      existingRecipients.filter(
-        (r) =>
-          r.email.toLowerCase() !== email.toLowerCase() &&
-          (r.created_via ?? "").toLowerCase() === "addon"
-      ).length === 0,
-    [existingRecipients, email]
+      sortedRecipients.find(
+        (r) => r.email.toLowerCase() === normalizedOwner
+      ) ?? null,
+    [sortedRecipients, normalizedOwner]
   );
 
-  useEffect(() => {
-    if (!open && !suspendReset) {
-      setCount(1);
-      setCountInput("1");
-      setEmails([""]);
-      setError(null);
-      setSaving(false);
+  const freeRecipients = useMemo(
+    () =>
+      sortedRecipients.filter((r) => {
+        const emailLower = r.email.toLowerCase();
+        const via = (r.created_via ?? "").toLowerCase();
+        // 契約者でも追加購入でもない = 無料枠側のスロットとみなす
+        return emailLower !== normalizedOwner && via !== "addon";
+      }),
+    [sortedRecipients, normalizedOwner]
+  );
+
+  const addonRecipients = useMemo(
+    () =>
+      sortedRecipients.filter((r) => {
+        const via = (r.created_via ?? "").toLowerCase();
+        return via === "addon";
+      }),
+    [sortedRecipients]
+  );
+
+  const baseSlots = useMemo(() => {
+    const slots: { key: string; email: string; type: "owner" | "free" }[] = [];
+
+    slots.push({
+      key: ownerRecipient?.email || ownerEmail,
+      email: ownerRecipient?.email || ownerEmail,
+      type: "owner",
+    });
+
+    const nonOwnerSlots = Math.max(0, baseSlotCount - 1);
+    for (let i = 0; i < nonOwnerSlots; i++) {
+      const recipient = freeRecipients[i];
+      slots.push({
+        key: recipient?.email || `free-${i}`,
+        email: recipient?.email || "",
+        type: "free",
+      });
     }
-  }, [open, suspendReset]);
+
+    return slots;
+  }, [ownerRecipient, ownerEmail, freeRecipients, baseSlotCount]);
+
+  const allBaseFilled = baseSlots.every((slot) => slot.email.trim().length > 0);
+
+  const pricePerAddress =
+    plan === "business"
+      ? 3980
+      : plan === "lite"
+      ? 2980
+      : undefined;
+
+  const canUseInlineEditor = plan === "business" || plan === "lite";
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+  const [baseValues, setBaseValues] = useState<string[]>(
+    baseSlots.map((slot) => slot.email)
+  );
+  const [baseDirty, setBaseDirty] = useState<boolean[]>(
+    baseSlots.map(() => false)
+  );
+  const [baseSaving, setBaseSaving] = useState<boolean[]>(
+    baseSlots.map(() => false)
+  );
+  const [baseErrorType, setBaseErrorType] = useState<
+    ("invalid" | "duplicate" | null)[]
+  >(baseSlots.map(() => null));
 
   useEffect(() => {
-    setEmails((prev) => {
-      const next = prev.slice(0, count);
-      while (next.length < count) next.push("");
-      return next;
-    });
-  }, [count]);
+    setBaseValues(baseSlots.map((slot) => slot.email));
+    setBaseDirty(baseSlots.map(() => false));
+    setBaseSaving(baseSlots.map(() => false));
+    setBaseErrorType(baseSlots.map(() => null));
+  }, [baseSlots]);
 
   const normalizedExisting = useMemo(() => {
     const set = new Set<string>();
-    existingRecipients.forEach(
+    sortedRecipients.forEach(
       (r) => r.email && set.add(r.email.toLowerCase())
     );
-    set.add(email.toLowerCase());
+    set.add(normalizedOwner);
     return set;
-  }, [existingRecipients, email]);
+  }, [sortedRecipients, normalizedOwner]);
 
-  const normalizedNewEmails = useMemo(
-    () => emails.map((v) => v.trim().toLowerCase()).filter(Boolean),
-    [emails]
+  // 追加購入済み行の編集用
+  const [editingAddonIndex, setEditingAddonIndex] = useState<number | null>(
+    null
   );
+  const [editingAddonValue, setEditingAddonValue] = useState("");
+  const [editingAddonError, setEditingAddonError] = useState<
+    "invalid" | "duplicate" | null
+  >(null);
+  const [editingAddonSaving, setEditingAddonSaving] = useState(false);
 
-  // メール形式チェック（簡易）
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  const hasInvalidFormat = useMemo(() => {
-    // 全行入力必須（normalizedNewEmails.length === count）を前提に
-    // 入力済みの各メールが形式に一致するかを判定
-    return emails
-      .map((v) => v.trim())
-      .filter(Boolean)
-      .some((v) => !emailRegex.test(v));
-  }, [emails]);
+  // 新規追加購入行
+  type NewAddonRow = {
+    id: string;
+    value: string;
+    error: "invalid" | "duplicate" | null;
+    saving: boolean;
+  };
+  const [newAddonRows, setNewAddonRows] = useState<NewAddonRow[]>([]);
 
-  // 各行の無効判定（UI表示用）は都度計算するため配列化は不要
+  const handleBaseChange = (index: number, value: string) => {
+    setBaseValues((prev) => prev.map((v, i) => (i === index ? value : v)));
+    setBaseDirty((prev) => prev.map((v, i) => (i === index ? true : v)));
 
-  const hasExistingDuplicate = normalizedNewEmails.some((v) =>
-    normalizedExisting.has(v)
-  );
-  const hasInternalDuplicate =
-    new Set(normalizedNewEmails).size !== normalizedNewEmails.length;
-
-  const handleCountChange = (value: string) => {
-    const digits = value.replace(/[^0-9]/g, "");
-    if (digits === "") {
-      setCountInput("");
+    const trimmed = value.trim();
+    if (!trimmed) {
+      setBaseErrorType((prev) => prev.map((v, i) => (i === index ? null : v)));
       return;
     }
-    const n = parseInt(digits, 10);
-    if (Number.isNaN(n)) {
-      setCountInput("");
+
+    if (!emailRegex.test(trimmed)) {
+      setBaseErrorType((prev) =>
+        prev.map((v, i) => (i === index ? "invalid" : v))
+      );
       return;
     }
-    if (n > MAX_ADDITIONAL_RECIPIENTS) {
-      setCount(MAX_ADDITIONAL_RECIPIENTS);
-      setCountInput(String(MAX_ADDITIONAL_RECIPIENTS));
+
+    const lower = trimmed.toLowerCase();
+    // index 行以外で同じメールが存在する場合も重複扱い
+    const duplicateInOtherBase = baseValues.some(
+      (v, i) => i !== index && v.trim().toLowerCase() === lower
+    );
+    const duplicateExisting =
+      normalizedExisting.has(lower) &&
+      !sortedRecipients
+        .filter((r) => r.email.toLowerCase() === lower)
+        .some((r) => r.email.toLowerCase() === baseSlots[index].email.toLowerCase());
+
+    if (duplicateInOtherBase || duplicateExisting) {
+      setBaseErrorType((prev) =>
+        prev.map((v, i) => (i === index ? "duplicate" : v))
+      );
       return;
     }
-    setCountInput(digits);
-    setCount(Math.max(1, n));
+
+    setBaseErrorType((prev) => prev.map((v, i) => (i === index ? null : v)));
   };
 
-  const updateEmail = (index: number, value: string) => {
-    setEmails((prev) => prev.map((cur, idx) => (idx === index ? value : cur)));
+  const handleBaseSave = async (index: number) => {
+    const currentSlot = baseSlots[index];
+    const trimmed = baseValues[index].trim();
+    if (!trimmed || baseErrorType[index]) return;
+
+    setBaseSaving((prev) => prev.map((v, i) => (i === index ? true : v)));
+    try {
+      if (currentSlot.type === "free" && !currentSlot.email) {
+        // 無料枠への新規追加: /api/recipients/free-add
+        const res = await fetch("/api/recipients/free-add", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ownerEmail: ownerEmail,
+            emails: [trimmed],
+          }),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => null);
+          throw new Error(data?.error || "配信先の保存に失敗しました。");
+        }
+      } else if (currentSlot.type === "free" && currentSlot.email) {
+        // 既存無料枠の変更: /api/recipients PATCH
+        const res = await fetch("/api/recipients", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ownerEmail: ownerEmail,
+            fromEmail: currentSlot.email,
+            toEmail: trimmed,
+          }),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => null);
+          throw new Error(data?.error || "メール変更に失敗しました。");
+        }
+      } else {
+        // owner 行はここには来ない想定（編集不可）
+        return;
+      }
+
+      // 成功時は最新一覧を再取得して親へ反映
+      await onRefetch?.(ownerEmail);
+    } catch (err) {
+      // 仕様上はモーダル表示だが、ここでは alert で簡易対応し、あとで専用モーダルに差し替え可能
+      const msg =
+        currentSlot.type === "free" && !currentSlot.email
+          ? "追加に失敗しました。"
+          : "変更に失敗しました。";
+      try {
+        window.alert(msg);
+      } catch {
+        console.error(msg, err);
+      }
+    } finally {
+      setBaseSaving((prev) => prev.map((v, i) => (i === index ? false : v)));
+    }
   };
 
-  const canSubmit =
-    normalizedNewEmails.length === count &&
-    !hasExistingDuplicate &&
-    !hasInternalDuplicate &&
-    !hasInvalidFormat &&
-    !saving &&
-    !prechecking;
+  const handleBaseDelete = async (index: number) => {
+    const currentSlot = baseSlots[index];
+    if (!currentSlot.email || currentSlot.type !== "free") return;
 
-  // 入力欄を増減（count は emails.length に自動追従）
-  const addEmailRow = () =>
-    setEmails((prev) =>
-      prev.length >= MAX_ADDITIONAL_RECIPIENTS ? prev : [...prev, ""]
+    setBaseSaving((prev) => prev.map((v, i) => (i === index ? true : v)));
+    try {
+      const res = await fetch("/api/recipients", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ownerEmail: ownerEmail,
+          emails: [currentSlot.email],
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error || "削除に失敗しました。");
+      }
+      await onRefetch?.(ownerEmail);
+    } catch (err) {
+      const msg = "削除に失敗しました。";
+      try {
+        window.alert(msg);
+      } catch {
+        console.error(msg, err);
+      }
+    } finally {
+      setBaseSaving((prev) => prev.map((v, i) => (i === index ? false : v)));
+    }
+  };
+
+  if (!canUseInlineEditor) {
+    // 従来どおりの単純なリスト表示（プラン不明・対象外の場合）
+    return (
+      <section className="space-y-3">
+        <h3 className="border-b border-gray-200 pb-2 text-xl font-semibold text-gray-900">
+          メール配信先
+        </h3>
+        {sortedRecipients.length > 0 ? (
+          <ul className="space-y-2 text-gray-700">
+            {sortedRecipients.map((recipient) => (
+              <li
+                key={recipient.email}
+                className="flex items-center justify-between rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm"
+              >
+                <span>
+                  {recipient.email}
+                  {recipient.pending_removal ? (
+                    <span className="ml-2 text-xs text-red-600">削除予定</span>
+                  ) : null}
+                </span>
+                <div className="flex items-center gap-2">
+                  {recipient.email.toLowerCase() === normalizedOwner && (
+                    <span className="inline-flex items-center rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700 ring-1 ring-inset ring-blue-200">
+                      契約者
+                    </span>
+                  )}
+                  {recipient.email.toLowerCase() !== normalizedOwner &&
+                    (recipient.created_via ?? "").toLowerCase() ===
+                      "addon" && (
+                      <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-600 ring-1 ring-inset ring-gray-200">
+                        追加購入
+                      </span>
+                    )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-sm text-gray-600">
+            配信先メールアドレスは登録されていません。
+          </p>
+        )}
+      </section>
     );
-  const removeEmailRow = () =>
-    setEmails((prev) => (prev.length > 1 ? prev.slice(0, -1) : prev));
+  }
 
-  // emails の行数に合わせて count / countInput を同期
-  useEffect(() => {
-    const n = emails.length;
-    setCount(n);
-    setCountInput(String(n));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [emails.length]);
+  const validateEmailDuplicate = (value: string, ignore?: { baseIndex?: number; addonIndex?: number; newId?: string }) => {
+    const trimmed = value.trim();
+    if (!trimmed) return null as "invalid" | "duplicate" | null;
+    if (!emailRegex.test(trimmed)) return "invalid" as const;
 
-  // いまの入力数が無料枠で収まるか（= 料金表示を消す条件）
-  const remainingNow =
-    typeof remainingSlots === "number"
-      ? Math.max(0, Number(remainingSlots || 0))
-      : 0;
-  const isAllFree = typeof remainingSlots === "number" && count <= remainingNow;
+    const lower = trimmed.toLowerCase();
 
-  // 指定行を削除（最低1行は残す）
-  const removeEmailAt = (idx: number) =>
-    setEmails((prev) =>
-      prev.length <= 1 ? prev : prev.filter((_, i) => i !== idx)
+    // ベース行との重複（自身は除外）
+    const duplicateInBase = baseValues.some((v, i) => {
+      if (ignore?.baseIndex === i) return false;
+      return v.trim().toLowerCase() === lower;
+    });
+
+    // 既存 recipient との重複（自身は除外）
+    const duplicateExisting =
+      normalizedExisting.has(lower) &&
+      !sortedRecipients
+        .filter((r) => r.email.toLowerCase() === lower)
+        .some((r) => r.email.toLowerCase() === normalizedOwner);
+
+    // 追加購入既存行との重複（自身は除外）
+    const duplicateInAddon = addonRecipients.some((r, i) => {
+      if (ignore?.addonIndex === i) return false;
+      return r.email.toLowerCase() === lower;
+    });
+
+    // 新規追加行との重複（自身は除外）
+    const duplicateInNewAddon = newAddonRows.some((row) => {
+      if (ignore?.newId && row.id === ignore.newId) return false;
+      return row.value.trim().toLowerCase() === lower;
+    });
+
+    if (duplicateInBase || duplicateExisting || duplicateInAddon || duplicateInNewAddon) {
+      return "duplicate";
+    }
+    return null;
+  };
+
+  const handleAddonEditChange = (index: number, value: string) => {
+    setEditingAddonValue(value);
+    setEditingAddonError(validateEmailDuplicate(value, { addonIndex: index }));
+  };
+
+  const handleAddonEditStart = (index: number) => {
+    const target = addonRecipients[index];
+    if (!target) return;
+    setEditingAddonIndex(index);
+    setEditingAddonValue(target.email);
+    setEditingAddonError(null);
+  };
+
+  const handleAddonEditCancel = () => {
+    setEditingAddonIndex(null);
+    setEditingAddonValue("");
+    setEditingAddonError(null);
+    setEditingAddonSaving(false);
+  };
+
+  const handleAddonEditSave = async (index: number) => {
+    const target = addonRecipients[index];
+    if (!target) return;
+    const trimmed = editingAddonValue.trim();
+    if (!trimmed || editingAddonError) return;
+
+    setEditingAddonSaving(true);
+    try {
+      const res = await fetch("/api/recipients", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ownerEmail,
+          fromEmail: target.email,
+          toEmail: trimmed,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error || "メール変更に失敗しました。");
+      }
+      await onRefetch?.(ownerEmail);
+      handleAddonEditCancel();
+    } catch (err) {
+      const msg = "変更に失敗しました。";
+      try {
+        window.alert(msg);
+      } catch {
+        console.error(msg, err);
+      }
+    } finally {
+      setEditingAddonSaving(false);
+    }
+  };
+
+  const handleAddonDelete = async (index: number) => {
+    const target = addonRecipients[index];
+    if (!target) return;
+    try {
+      const ok =
+        typeof window !== "undefined"
+          ? window.confirm("この配信先を削除しますか？")
+          : true;
+      if (!ok) return;
+    } catch {
+      // confirm が使えない環境ではそのまま続行
+    }
+
+    setEditingAddonSaving(true);
+    try {
+      const res = await fetch("/api/recipients", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ownerEmail,
+          emails: [target.email],
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error || "削除に失敗しました。");
+      }
+      await onRefetch?.(ownerEmail);
+    } catch (err) {
+      const msg = "削除に失敗しました。";
+      try {
+        window.alert(msg);
+      } catch {
+        console.error(msg, err);
+      }
+    } finally {
+      setEditingAddonSaving(false);
+    }
+  };
+
+  const handleNewAddonChange = (id: string, value: string) => {
+    setNewAddonRows((prev) =>
+      prev.map((row) =>
+        row.id === id
+          ? { ...row, value, error: validateEmailDuplicate(value, { newId: id }) }
+          : row
+      )
     );
+  };
 
-  const handleOpenConfirm = async () => {
-    if (!canSubmit) return;
-    setError(null);
-    setCheckoutUrl("");
-    setAwaitingCheckoutRedirect(false);
+  const handleNewAddonSave = async (id: string) => {
+    const row = newAddonRows.find((r) => r.id === id);
+    if (!row) return;
+    const trimmed = row.value.trim();
+    if (!trimmed || row.error) return;
+
+    setNewAddonRows((prev) =>
+      prev.map((r) => (r.id === id ? { ...r, saving: true } : r))
+    );
 
     try {
-      setPrechecking(true);
-      const payloadAll = emails.map((v) => v.trim()).filter(Boolean);
-
-      // 現在の残り枠を取得
+      // 現在の残り無料枠を取得
       const limRes = await fetch(
-        `/api/me/limits?email=${encodeURIComponent(email)}`
+        `/api/me/limits?email=${encodeURIComponent(ownerEmail)}`
       );
       let lim: { remaining_slots?: number } | null = null;
       try {
@@ -1573,66 +1785,43 @@ function AddRecipientsModal({
         lim = null;
       }
       const remaining = Number(lim?.remaining_slots ?? 0);
+      const freeCount = remaining > 0 ? 1 : 0;
+      const payable = 1 - freeCount;
 
-      const freeCount = Math.max(0, Math.min(remaining, payloadAll.length));
-      const payable = Math.max(0, payloadAll.length - freeCount);
-
-      const freeEmails = payloadAll.slice(0, freeCount);
-      const paidEmails = payloadAll.slice(freeCount);
-      setFreeCountPlanned(freeCount);
-      setPayableCountPlanned(payable);
-      setFreeEmailsPlanned(freeEmails);
-      setPaidEmailsPlanned(paidEmails);
-
-      if (payable > 0) {
-        // 有料分のみ precheck（必要ならCheckout遷移）
-        const res = await fetch("/api/stripe/checkout", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            plan,
-            quantity: payable,
-            ownerEmail: email,
-            additionalEmails: paidEmails,
-            precheck: true,
-          }),
-        });
-        const data = await res.json();
-        if (data?.canFinalizeSilently) {
-          setAwaitingCheckoutRedirect(false);
-        } else if (data?.url) {
-          setCheckoutUrl(String(data.url));
-          setAwaitingCheckoutRedirect(true);
-        } else {
-          throw new Error(data?.error || "事前チェックに失敗しました。");
+      // 追加内容の簡易確認
+      try {
+        const ok =
+          typeof window !== "undefined"
+            ? window.confirm(
+                payable > 0
+                  ? `このメールアドレスを追加します。\n無料枠で追加: ${
+                      freeCount > 0 ? "1件" : "0件"
+                    }\n追加購入: 1件（¥${
+                      pricePerAddress
+                        ? pricePerAddress.toLocaleString()
+                        : "3,000"
+                    } / 月・税別）`
+                  : "このメールアドレスを無料枠で追加します。"
+              )
+            : true;
+        if (!ok) {
+          setNewAddonRows((prev) =>
+            prev.map((r) =>
+              r.id === id ? { ...r, saving: false } : r
+            )
+          );
+          return;
         }
-      } else {
-        // 全て無料枠内：Checkoutは不要
-        setAwaitingCheckoutRedirect(false);
-      }
+      } catch {}
 
-      setSuspendReset(true);
-      setOpen(false);
-      setConfirmOpen(true);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "不明なエラーが発生しました。");
-    } finally {
-      setPrechecking(false);
-    }
-  };
-
-  const performPurchase = async () => {
-    setSaving(true);
-    setError(null);
-    try {
-      // 1) 無料枠分を先に確定
-      if (freeCountPlanned > 0 && freeEmailsPlanned.length > 0) {
+      // 1) 無料枠があれば先に free-add
+      if (freeCount > 0) {
         const freeRes = await fetch("/api/recipients/free-add", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            ownerEmail: email,
-            emails: freeEmailsPlanned,
+            ownerEmail,
+            emails: [trimmed],
           }),
         });
         if (!freeRes.ok) {
@@ -1641,938 +1830,299 @@ function AddRecipientsModal({
         }
       }
 
-      // 2) 有料分があればCheckout/サイレント更新
-      if (payableCountPlanned > 0) {
+      // 2) 有料分があれば Checkout で購入
+      if (payable > 0) {
         const res = await fetch("/api/stripe/checkout", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             plan,
-            quantity: payableCountPlanned,
-            ownerEmail: email,
-            additionalEmails: paidEmailsPlanned,
+            quantity: 1,
+            ownerEmail,
+            additionalEmails: [trimmed],
           }),
         });
+        const data = await res.json().catch(() => null);
         if (!res.ok) {
-          const data = await res.json().catch(() => null);
           throw new Error(data?.error || "Checkout の実行に失敗しました。");
         }
-        const data = await res.json();
-        if (data?.updated && data?.portalUrl) {
-          const d = data as Record<string, unknown>;
-          setUpdatedProductName(String(d.productName ?? "追加受信者"));
-          setUpdatedQuantity(Number(d.newQuantity ?? payableCountPlanned));
-          setPortalUrl(String(d.portalUrl));
-          setPaidCount(payableCountPlanned);
-          setFreeCount(freeCountPlanned ?? 0);
-          setPostUpdateOpen(true);
-          setSuspendReset(false);
-          setOpen(false);
-        } else {
-          throw new Error(
-            data?.error || "処理に失敗しました。再読み込みしてお試しください。"
-          );
+
+        if (data?.url) {
+          try {
+            window.location.href = String(data.url);
+          } catch {
+            // noop
+          }
         }
-      } else {
-        // 全て無料で完了 → 成功モーダルを表示（リロードせずに文言出し分け）
-        setPaidCount(0);
-        setFreeCount(freeCountPlanned ?? 0);
-        setUpdatedProductName("追加受信者");
-        setUpdatedQuantity(freeCountPlanned);
-        setPortalUrl("");
-        setPostUpdateOpen(true);
-        setSuspendReset(false);
-        setOpen(false);
       }
+
+      await onRefetch?.(ownerEmail);
+      setNewAddonRows((prev) => prev.filter((r) => r.id !== id));
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "不明なエラーが発生しました。"
+      const msg = "追加に失敗しました。";
+      try {
+        window.alert(msg);
+      } catch {
+        console.error(msg, err);
+      }
+      setNewAddonRows((prev) =>
+        prev.map((r) => (r.id === id ? { ...r, saving: false } : r))
       );
-    } finally {
-      setSaving(false);
-      setConfirmOpen(false);
     }
   };
 
-  // 入力済みのメール数（空白はカウントしない）
-  const validEmailCount = emails.reduce((n, v) => n + (v.trim() ? 1 : 0), 0);
-  // 入力を反映した残り無料枠（マイナスにならない）
-  const remainingAfterInput = Math.max(
-    0,
-    Number(remainingSlots ?? 0) - validEmailCount
-  );
-
   return (
-    <>
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogTrigger asChild>
-          <Button className="w-full">追加</Button>
-        </DialogTrigger>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle className="text-xl font-bold">
-              配信先を追加
-            </DialogTitle>
-            <DialogDescription>
-              追加する配信先のメールアドレスを入力してください。
-              {awaitingCheckoutRedirect && (
-                <>
-                  <br />
-                  ※この操作ではチェックアウト画面に遷移する場合があります。
-                </>
+    <section className="space-y-3">
+      <h3 className="border-b border-gray-200 pb-2 text-xl font-semibold text-gray-900">
+        メール配信先
+      </h3>
+      <div className="space-y-3">
+        {baseSlots.map((slot, index) => (
+          <div key={slot.key} className="flex flex-col gap-1 text-sm">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+              <div className="relative w-full sm:w-[70%]">
+                <Input
+                  type="email"
+                  value={baseValues[index] ?? ""}
+                  disabled={slot.type === "owner" || baseSaving[index]}
+                  onChange={(e) => {
+                    if (slot.type === "owner") return;
+                    handleBaseChange(index, e.target.value);
+                  }}
+                  placeholder="メールアドレスを入力"
+                  className={`w-full ${
+                    baseErrorType[index] === "invalid" ||
+                    baseErrorType[index] === "duplicate"
+                      ? "border-red-500 focus-visible:ring-red-500 placeholder:text-red-400"
+                      : ""
+                  }`}
+                />
+                {slot.type === "free" && (
+                  <div className="pointer-events-none absolute inset-y-0 right-2 flex items-center">
+                    <Button
+                      type="button"
+                      size="xs"
+                      className="pointer-events-auto h-6 px-2 text-xs"
+                      disabled={
+                        baseSaving[index] ||
+                        !baseDirty[index] ||
+                        !baseValues[index]?.trim() ||
+                        !!baseErrorType[index]
+                      }
+                      onClick={() => handleBaseSave(index)}
+                    >
+                      保存
+                    </Button>
+                  </div>
+                )}
+              </div>
+              {slot.type === "owner" && (
+                <p className="text-[11px] text-black">
+                  契約者のメールアドレスは変更出来ません。
+                </p>
               )}
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="px-4 sm:px-6 mt-2">
-            {/* 上部3ブロックをまとめて縦間隔を確保 */}
-            <div className="space-y-2">
-              {/* ① 現在の残り無料枠（動的） */}
-              {typeof remainingSlots === "number" && (
-                <div className="rounded-md bg-blue-50 p-3 text-sm text-blue-800">
-                  現在の残り無料枠：{remainingAfterInput}
-                </div>
-              )}
-
-              {/* ② 注意文（太字＆少し大きめ） */}
-              <p className="text-sm">
-                ※ 無料枠を超えた配信先追加は追加購入となります
-              </p>
-
-              {/* ③ 料金（左右余白は上と同一コンテナなので揃う） */}
-              {typeof unitAmount !== "undefined" && !isAllFree && (
-                <div className="rounded-md bg-gray-50 p-3 text-sm text-gray-700">
-                  料金 (月額・消費税10%込)：
-                  {formatCurrency(unitAmount, currency)} / 1メール
+              {slot.type === "free" && slot.email && (
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="xs"
+                    disabled={baseSaving[index]}
+                    onClick={() => handleBaseDelete(index)}
+                  >
+                    削除
+                  </Button>
                 </div>
               )}
             </div>
+            {baseErrorType[index] === "invalid" && (
+              <p className="text-[11px] text-red-600">
+                メールアドレスの形式が正しくありません。
+              </p>
+            )}
+            {baseErrorType[index] === "duplicate" && (
+              <p className="text-[11px] text-red-600">
+                メールアドレスが重複しています。
+              </p>
+            )}
+          </div>
+        ))}
 
-            {/* 入力フォーム */}
-            <div className="space-y-3 mt-4">
-              <Label>メールアドレス</Label>
-              {emails.map((value, index) => {
-                const trimmed = (value || "").trim();
-                const showInvalid = !!trimmed && !emailRegex.test(trimmed);
-                return (
-                  <div key={index}>
-                    <div className="flex items-center gap-2">
-                      <Input
-                        type="email"
-                        required
-                        value={value}
-                        onChange={(e) => updateEmail(index, e.target.value)}
-                        placeholder={`example${index + 1}@email.com`}
-                        disabled={prechecking || saving}
-                        className={`flex-1 ${
-                          showInvalid
-                            ? "border-red-500 focus-visible:ring-red-500 placeholder:text-red-400"
-                            : ""
-                        }`}
-                        aria-invalid={showInvalid}
-                      />
+        {addonRecipients.map((recipient, index) => {
+          const isEditing = editingAddonIndex === index;
+          const value = isEditing ? editingAddonValue : recipient.email;
+          const error = isEditing ? editingAddonError : null;
+          return (
+            <div key={recipient.email} className="flex flex-col gap-1 text-sm">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+                <div className="relative w-full sm:w-[70%]">
+                  <Input
+                    type="email"
+                    value={value}
+                    disabled={!isEditing || editingAddonSaving}
+                    onChange={(e) =>
+                      isEditing && handleAddonEditChange(index, e.target.value)
+                    }
+                    placeholder="メールアドレスを入力"
+                    className={`w-full ${
+                      error === "invalid" || error === "duplicate"
+                        ? "border-red-500 focus-visible:ring-red-500 placeholder:text-red-400"
+                        : ""
+                    }`}
+                  />
+                  {isEditing && (
+                    <div className="pointer-events-none absolute inset-y-0 right-2 flex items-center">
                       <Button
                         type="button"
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => removeEmailAt(index)}
-                        disabled={prechecking || saving || emails.length <= 1}
-                        aria-label={`行${index + 1}を削除`}
-                        title="この行を削除"
+                        size="xs"
+                        className="pointer-events-auto h-6 px-2 text-xs"
+                        disabled={
+                          editingAddonSaving ||
+                          !editingAddonValue.trim() ||
+                          !!editingAddonError
+                        }
+                        onClick={() => handleAddonEditSave(index)}
                       >
-                        ×
+                        保存
                       </Button>
                     </div>
-                    {showInvalid && (
-                      <p className="mt-1 text-xs text-red-600">
-                        メールアドレスの形式が正しくありません。
-                      </p>
-                    )}
-                  </div>
-                );
-              })}
-
-              <div className="flex items-center gap-2 pt-1">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={addEmailRow}
-                  disabled={
-                    prechecking ||
-                    saving ||
-                    emails.length >= MAX_ADDITIONAL_RECIPIENTS
-                  }
-                >
-                  + 追加
-                </Button>
-              </div>
-
-              {(hasExistingDuplicate || hasInternalDuplicate) && (
-                <div className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-600">
-                  メールアドレスが重複しています。
-                </div>
-              )}
-              {/* 入力全体の形式エラーは行単位の表示に統一するため非表示 */}
-              {error && (
-                <div className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-600">
-                  {error}
-                </div>
-              )}
-            </div>
-          </div>
-
-          <DialogFooter className="mt-6">
-            <DialogClose asChild>
-              <Button variant="outline" disabled={saving}>
-                キャンセル
-              </Button>
-            </DialogClose>
-            <Button onClick={handleOpenConfirm} disabled={!canSubmit}>
-              {prechecking ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  確認中...
-                </>
-              ) : saving ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  反映中...
-                </>
-              ) : (
-                "確認へ進む"
-              )}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* 事前確認ダイアログ */}
-      <Dialog
-        open={confirmOpen}
-        onOpenChange={(v) => {
-          setConfirmOpen(v);
-          if (!v) setAwaitingCheckoutRedirect(false);
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle className="text-lg font-bold">
-              追加内容の確認
-            </DialogTitle>
-            <DialogDescription className="mb-6 leading-relaxed">
-              {payableCountPlanned > 0 ? (
-                // 追加購入が存在する場合
-                <div className="space-y-1">
-                  {/* 無料枠で入る分があるときだけ先頭に表示 */}
-                  {freeCountPlanned > 0 && (
-                    <div>無料枠で追加：{freeCountPlanned}件</div>
                   )}
-                  <div>配信先追加購入：{payableCountPlanned}件</div>
-                  <div>
-                    追加購入金額 (月額・消費税10%込)：
-                    {formatCurrency(
-                      (unitAmount || 0) * payableCountPlanned,
-                      currency
-                    )}
-                  </div>
                 </div>
-              ) : (
-                // すべて無料枠内のとき
-                <div>無料枠で追加：{freeCountPlanned}件</div>
-              )}
-
-              {awaitingCheckoutRedirect && (
-                <span className="mt-4 block text-sm text-muted-foreground">
-                  続行するとチェックアウト画面に遷移します。
-                </span>
-              )}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter className="mt-2">
-            <Button
-              variant="outline"
-              onClick={() => {
-                setConfirmOpen(false);
-                setSuspendReset(false);
-                setOpen(true);
-                setAwaitingCheckoutRedirect(false);
-              }}
-              disabled={saving}
-            >
-              戻る
-            </Button>
-            {awaitingCheckoutRedirect ? (
-              <Button
-                onClick={() => {
-                  if (checkoutUrl) {
-                    try {
-                      window.location.href = checkoutUrl;
-                    } catch {}
-                  }
-                }}
-                disabled={saving || !checkoutUrl}
-              >
-                チェックアウトへ
-              </Button>
-            ) : (
-              <Button onClick={performPurchase} disabled={saving}>
-                {saving ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading...
-                  </>
-                ) : (
-                  "確定"
-                )}
-              </Button>
-            )}
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* 反映後ダイアログ */}
-      <Dialog open={postUpdateOpen} onOpenChange={setPostUpdateOpen}>
-        <DialogContent>
-          <DialogHeader>
-            {/* タイトル：更新 → 追加 */}
-            <DialogTitle className="text-lg font-bold">
-              追加が完了しました
-            </DialogTitle>
-
-            {/* 本文：追加購入の有無で出し分け */}
-            <DialogDescription className="mb-6 leading-relaxed">
-              {paidCount > 0 ? (
-                // 追加購入が存在する場合
-                <div className="space-y-1">
-                  {/* 無料枠内で追加があるときだけ先頭に表示 */}
-                  {freeCount > 0 && <div>無料枠で追加完了：{freeCount}件</div>}
-                  <div>配信先の追加購入完了：{paidCount}件</div>
-                </div>
-              ) : (
-                // 追加購入が存在しない場合（従来通り）
-                <div>無料枠で追加完了：{freeCount}件</div>
-              )}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <DialogClose asChild>
-              <Button
-                variant="outline"
-                onClick={() => {
-                  try {
-                    window.location.reload();
-                  } catch {}
-                }}
-              >
-                閉じる
-              </Button>
-            </DialogClose>
-            {paidCount > 0 && portalUrl ? (
-              <Button asChild>
-                <a href={portalUrl} target="_blank" rel="noopener noreferrer">
-                  クレカ変更/支払履歴を確認
-                </a>
-              </Button>
-            ) : null}
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* チェックアウト用（必要時のみ使用） */}
-      <Dialog open={postCheckoutOpen} onOpenChange={setPostCheckoutOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle className="text-lg font-bold">
-              チェックアウトに進みます
-            </DialogTitle>
-            <DialogDescription>
-              外部のチェックアウトに遷移します。必要に応じてブラウザのポップアップ許可をご確認ください。
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <DialogClose asChild>
-              <Button variant="outline">閉じる</Button>
-            </DialogClose>
-            {checkoutUrl ? (
-              <Button asChild>
-                <a href={checkoutUrl} target="_blank" rel="noopener noreferrer">
-                  チェックアウトへ
-                </a>
-              </Button>
-            ) : null}
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </>
-  );
-}
-
-/** ----------------- EditRecipientModal ----------------- */
-
-type EditRecipientModalProps = {
-  ownerEmail: string;
-  addonRecipients: RecipientInfo[];
-  onSuccess: (recipients: RecipientInfo[]) => void;
-};
-
-function EditRecipientModal({
-  ownerEmail,
-  addonRecipients,
-  onSuccess,
-}: EditRecipientModalProps) {
-  const { toast } = useToast();
-  const [open, setOpen] = useState(false);
-  const [selectedEmail, setSelectedEmail] = useState<string>("");
-  const [nextEmail, setNextEmail] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState(false);
-
-  const selectableRecipients = useMemo(
-    () => addonRecipients.filter((r) => !r.pending_removal),
-    [addonRecipients]
-  );
-
-  useEffect(() => {
-    if (open) {
-      setSelectedEmail(selectableRecipients[0]?.email ?? "");
-    } else {
-      setNextEmail("");
-      setError(null);
-      setSaving(false);
-    }
-  }, [open, selectableRecipients]);
-
-  const handleSubmit = async () => {
-    if (!selectedEmail || !nextEmail.trim()) {
-      setError("変更前/変更後のメールを入力してください。");
-      return;
-    }
-    setSaving(true);
-    setError(null);
-    try {
-      const res = await fetch("/api/recipients", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ownerEmail,
-          fromEmail: selectedEmail,
-          toEmail: nextEmail.trim(),
-        }),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        throw new Error(data?.error || "メール変更に失敗しました。");
-      }
-      const data = await res.json();
-      if (Array.isArray(data?.recipients)) {
-        onSuccess(data.recipients as RecipientInfo[]);
-      }
-      toast({ title: "メールアドレスを変更しました" });
-
-      setDone(true);
-      setTimeout(() => {
-        setOpen(false);
-        setDone(false);
-      }, 1200);
-    } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "不明なエラーが発生しました。"
-      );
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button className="w-full" disabled={!selectableRecipients.length}>
-          変更
-        </Button>
-      </DialogTrigger>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle className="text-xl font-bold">配信先を変更</DialogTitle>
-          <DialogDescription>
-            変更対象を選択し、新しいメールアドレスを入力してください。
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="px-4 sm:px-6">
-          {done && (
-            <div className="rounded-md bg-green-50 p-3 text-sm text-green-700">
-              変更が完了しました。
-            </div>
-          )}
-
-          {selectableRecipients.length === 0 ? (
-            <p className="text-sm text-gray-600">
-              変更可能な受信者がいません。
-            </p>
-          ) : (
-            <>
-              <div className="space-y-2 mt-4">
-                <Label htmlFor="edit-target">変更するメール</Label>
-                <select
-                  id="edit-target"
-                  className="w-full rounded-md border border-gray-300 bg-white px-3 pr-8 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  value={selectedEmail}
-                  onChange={(e) => setSelectedEmail(e.target.value)}
-                >
-                  {selectableRecipients.map((r) => (
-                    <option key={r.email} value={r.email}>
-                      {r.email}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="space-y-2 mt-4">
-                <Label htmlFor="edit-next">新しいメール</Label>
-                <Input
-                  id="edit-next"
-                  type="email"
-                  value={nextEmail}
-                  onChange={(e) => setNextEmail(e.target.value)}
-                  required
-                />
-              </div>
-            </>
-          )}
-
-          {error && (
-            <div className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-600">
-              {error}
-            </div>
-          )}
-        </div>
-
-        <DialogFooter className="mt-6">
-          <DialogClose asChild>
-            <Button variant="outline" disabled={saving}>
-              キャンセル
-            </Button>
-          </DialogClose>
-          <Button
-            onClick={handleSubmit}
-            disabled={saving || !selectableRecipients.length}
-          >
-            {saving ? (
-              <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" /> 反映中...
-              </>
-            ) : (
-              "変更する"
-            )}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-/** ----------------- DeleteRecipientsModal ----------------- */
-
-type DeleteRecipientsModalProps = {
-  ownerEmail: string;
-  addonRecipients: RecipientInfo[];
-  manageUrl?: string;
-  onSuccess: (recipients: RecipientInfo[]) => void;
-};
-
-function DeleteRecipientsModal({
-  ownerEmail,
-  addonRecipients,
-  onSuccess,
-}: DeleteRecipientsModalProps) {
-  const { toast } = useToast();
-  const [open, setOpen] = useState(false);
-  const [pendingEmail, setPendingEmail] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [hasMarked, setHasMarked] = useState(false);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-  const [postDeleteOpen, setPostDeleteOpen] = useState(false);
-  const [skipResetOnce, setSkipResetOnce] = useState(false);
-  const [portalUrl, setPortalUrl] = useState<string>("");
-  // 完了モーダルに表示するための削除件数
-  const [deletedFreeCount, setDeletedFreeCount] = useState(0);
-  const [deletedPaidCount, setDeletedPaidCount] = useState(0);
-  const [isCancellingSubscription, setIsCancellingSubscription] =
-    useState(false);
-
-  const addonOnly = useMemo(
-    () =>
-      addonRecipients.filter(
-        (r) => (r.created_via ?? "").toLowerCase() === "addon"
-      ),
-    [addonRecipients]
-  );
-  const isDeletingAllAddonRecipients =
-    addonOnly.length > 0 && addonOnly.every((r) => selected.has(r.email));
-
-  useEffect(() => {
-    if (!open) {
-      if (confirmDeleteOpen || postDeleteOpen) return;
-      if (skipResetOnce) {
-        setSkipResetOnce(false);
-        return;
-      }
-      setPendingEmail(null);
-      setError(null);
-      setHasMarked(false);
-      setSelected(new Set());
-      setPortalUrl("");
-      setIsCancellingSubscription(false);
-    }
-  }, [open, skipResetOnce, confirmDeleteOpen, postDeleteOpen]);
-
-  const quantityChangeEnabled = useMemo(
-    () => hasMarked || addonRecipients.some((r) => r.pending_removal),
-    [hasMarked, addonRecipients]
-  );
-
-  const toggleSelect = (email: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(email)) next.delete(email);
-      else next.add(email);
-      return next;
-    });
-  };
-
-  const handleCommitDelete = async () => {
-    const emails = Array.from(selected);
-    // 今回削除する件数（無料/有料）を確定して保持
-    const selectedList = addonRecipients.filter((r) => selected.has(r.email));
-    const paidToDelete = selectedList.filter(
-      (r) => (r.created_via ?? "").toLowerCase() === "addon"
-    ).length;
-    const freeToDelete = selectedList.length - paidToDelete;
-
-    setDeletedPaidCount(paidToDelete);
-    setDeletedFreeCount(freeToDelete);
-    // 「すべての追加購入を削除＝サブスク自体キャンセル」フラグを確定
-    setIsCancellingSubscription(
-      paidToDelete > 0 && isDeletingAllAddonRecipients
-    );
-    if (emails.length === 0) return;
-    setPendingEmail("__batch__");
-    setDeleting(true);
-    setError(null);
-    try {
-      const res = await fetch("/api/recipients", {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ownerEmail, emails }),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        throw new Error(data?.error || "削除に失敗しました。");
-      }
-      const data = await res.json();
-      if (Array.isArray(data?.recipients)) {
-        onSuccess(data.recipients as RecipientInfo[]);
-      }
-      if (data && typeof data === "object" && "portalUrl" in data) {
-        const p = String((data as Record<string, unknown>).portalUrl || "");
-        setPortalUrl(p);
-      }
-      setHasMarked(true);
-      setSelected(new Set());
-      toast({ title: "削除を反映しました" });
-      setConfirmDeleteOpen(false);
-      setOpen(false);
-      setPostDeleteOpen(true);
-    } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "不明なエラーが発生しました。"
-      );
-    } finally {
-      setPendingEmail(null);
-      setDeleting(false);
-    }
-  };
-
-  return (
-    <>
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogTrigger asChild>
-          <Button className="w-full" disabled={addonRecipients.length === 0}>
-            削除
-          </Button>
-        </DialogTrigger>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle className="text-xl font-bold">
-              配信先を削除
-            </DialogTitle>
-            <DialogDescription>
-              削除する配信先を選択してください。
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="px-4 sm:px-6">
-            {addonRecipients.length === 0 ? (
-              <p className="text-sm text-gray-600">
-                削除可能な受信者がいません。
-              </p>
-            ) : (
-              <ul className="space-y-2 mt-2">
-                {addonRecipients.map((r) => (
-                  <li
-                    key={r.email}
-                    className={`flex items-center justify-between rounded-lg border bg-white px-3 py-2 text-sm ${
-                      selected.has(r.email)
-                        ? "border-red-300 bg-red-50"
-                        : "border-gray-200"
-                    }`}
-                  >
-                    <div>
-                      {r.email}
-                      {r.pending_removal ? (
-                        <span className="ml-2 text-xs text-red-600">
-                          削除予定
-                        </span>
-                      ) : selected.has(r.email) ? (
-                        <span className="ml-2 text-xs text-red-600">
-                          削除対象
-                        </span>
-                      ) : null}
-                    </div>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      disabled={
-                        Boolean(r.pending_removal) || Boolean(pendingEmail)
-                      }
-                      onClick={() => toggleSelect(r.email)}
-                      aria-label={`${r.email} を選択`}
-                    >
-                      {selected.has(r.email) ? (
-                        "選択解除"
-                      ) : (
-                        <span className="text-lg">×</span>
-                      )}
-                    </Button>
-                  </li>
-                ))}
-              </ul>
-            )}
-
-            {error && (
-              <div className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-600">
-                {error}
-              </div>
-            )}
-          </div>
-
-          <DialogFooter className="mt-6">
-            <DialogClose asChild>
-              <Button variant="outline" disabled={Boolean(pendingEmail)}>
-                閉じる
-              </Button>
-            </DialogClose>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setIsCancellingSubscription(isDeletingAllAddonRecipients);
-                setSkipResetOnce(true);
-                setConfirmDeleteOpen(true);
-                setOpen(false);
-              }}
-              disabled={selected.size === 0 || Boolean(pendingEmail)}
-            >
-              削除実行
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* 確認ダイアログ */}
-      <Dialog
-        open={confirmDeleteOpen}
-        onOpenChange={(v) => {
-          setConfirmDeleteOpen(v);
-          if (!v && !postDeleteOpen) setOpen(true);
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle className="text-lg font-bold">削除の確認</DialogTitle>
-            <DialogDescription className="mb-6 leading-relaxed">
-              {(() => {
-                // 今回選択された受信者の無料/有料の内訳
-                const selectedList = addonRecipients.filter((r) =>
-                  selected.has(r.email)
-                );
-                const paid = selectedList.filter(
-                  (r) => (r.created_via ?? "").toLowerCase() === "addon"
-                ).length;
-                const free = selectedList.length - paid;
-
-                // 1) 有料の削除が1件以上ある
-                if (paid > 0) {
-                  return (
-                    <div className="space-y-1">
-                      {/* 無料枠で追加分が含まれるときだけ先頭に表示 */}
-                      {free > 0 && (
-                        <div>
-                          無料枠で追加した {free} 件の配信先を削除します。
-                        </div>
-                      )}
-
-                      {isDeletingAllAddonRecipients ? (
-                        <div>
-                          追加購入した {paid}{" "}
-                          件の配信先を削除します。追加購入のサブスクリプションはキャンセルされます。
-                        </div>
-                      ) : (
-                        <div>
-                          追加購入した {paid}{" "}
-                          件の配信先を削除します。サブスクリプションの数量も更新されます。
-                        </div>
-                      )}
-                    </div>
-                  );
-                }
-
-                // 2) 無料枠のみ削除
-                return (
-                  <div>無料枠で追加した {free} 件の配信先を削除します。</div>
-                );
-              })()}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter className="mt-2">
-            <Button
-              variant="outline"
-              onClick={() => {
-                setConfirmDeleteOpen(false);
-                setOpen(true);
-              }}
-              disabled={deleting}
-            >
-              戻る
-            </Button>
-            <Button onClick={handleCommitDelete} disabled={deleting}>
-              {deleting ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading...
-                </>
-              ) : (
-                "削除する"
-              )}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* 完了ダイアログ */}
-      <Dialog open={postDeleteOpen} onOpenChange={setPostDeleteOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle className="text-lg font-bold">
-              削除が完了しました
-            </DialogTitle>
-            <DialogDescription className="mb-6 leading-relaxed">
-              {deletedPaidCount > 0 ? (
-                <div className="space-y-1">
-                  {/* 無料枠の削除があれば先頭に表示 */}
-                  {deletedFreeCount > 0 && (
-                    <div>
-                      無料枠で追加した {deletedFreeCount}{" "}
-                      件の配信先を削除しました。
-                    </div>
+                <div className="flex items-center gap-2 text-[11px] text-gray-600">
+                  {!isEditing && (
+                    <span className="inline-flex items-center rounded-full border border-gray-300/60 bg-gray-50/60 px-2 py-0.5 text-gray-600/80">
+                      追加分
+                    </span>
                   )}
-
-                  {isCancellingSubscription ? (
-                    <div>
-                      追加購入した {deletedPaidCount}{" "}
-                      件の配信先を削除しました。追加購入のサブスクリプションはキャンセルされました。
-                    </div>
+                  {!isEditing ? (
+                    <>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="xs"
+                        disabled={editingAddonSaving}
+                        onClick={() => handleAddonEditStart(index)}
+                      >
+                        変更
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="xs"
+                        disabled={editingAddonSaving}
+                        onClick={() => handleAddonDelete(index)}
+                      >
+                        削除
+                      </Button>
+                    </>
                   ) : (
-                    <div>
-                      追加購入した {deletedPaidCount}{" "}
-                      件の配信先を削除しました。サブスクリプションの数量も更新されました。
-                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="xs"
+                      disabled={editingAddonSaving}
+                      onClick={handleAddonEditCancel}
+                    >
+                      変更をキャンセルする
+                    </Button>
                   )}
                 </div>
-              ) : (
-                <div>
-                  無料枠で追加した {deletedFreeCount} 件の配信先を削除しました。
-                </div>
+              </div>
+              {error === "invalid" && (
+                <p className="text-[11px] text-red-600">
+                  メールアドレスの形式が正しくありません。
+                </p>
               )}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <DialogClose asChild>
-              <Button
-                variant="outline"
-                onClick={() => {
-                  try {
-                    window.location.reload();
-                  } catch {}
-                }}
-              >
-                閉じる
-              </Button>
-            </DialogClose>
-            {deletedPaidCount > 0 && portalUrl && (
-              <Button asChild>
-                <a href={portalUrl} target="_blank" rel="noopener noreferrer">
-                  クレカ変更/支払履歴を確認
-                </a>
-              </Button>
+              {error === "duplicate" && (
+                <p className="text-[11px] text-red-600">
+                  メールアドレスが重複しています。
+                </p>
+              )}
+            </div>
+          );
+        })}
+
+        {newAddonRows.map((row) => (
+          <div key={row.id} className="flex flex-col gap-1 text-sm">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+              <div className="relative w-full sm:w-[70%]">
+                <Input
+                  type="email"
+                  value={row.value}
+                  disabled={row.saving}
+                  onChange={(e) => handleNewAddonChange(row.id, e.target.value)}
+                  placeholder="メールアドレスを入力"
+                  className={`w-full ${
+                    row.error === "invalid" || row.error === "duplicate"
+                      ? "border-red-500 focus-visible:ring-red-500 placeholder:text-red-400"
+                      : ""
+                  }`}
+                />
+                <div className="pointer-events-none absolute inset-y-0 right-2 flex items-center">
+                  <Button
+                    type="button"
+                    size="xs"
+                    className="pointer-events-auto h-6 px-2 text-xs"
+                    disabled={
+                      row.saving || !row.value.trim() || !!row.error
+                    }
+                    onClick={() => handleNewAddonSave(row.id)}
+                  >
+                    保存
+                  </Button>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 text-[11px] text-gray-600">
+                <span className="inline-flex items-center rounded-full border border-gray-300/40 bg-gray-50/40 px-2 py-0.5 text-gray-500/80">
+                  追加分
+                </span>
+              </div>
+            </div>
+            {row.error === "invalid" && (
+              <p className="text-[11px] text-red-600">
+                メールアドレスの形式が正しくありません。
+              </p>
             )}
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </>
+            {row.error === "duplicate" && (
+              <p className="text-[11px] text-red-600">
+                メールアドレスが重複しています。
+              </p>
+            )}
+          </div>
+        ))}
+
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3 pt-1">
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={!allBaseFilled}
+              onClick={() => {
+                if (!allBaseFilled) return;
+                setNewAddonRows((prev) => [
+                  ...prev,
+                  {
+                    id: `${Date.now()}-${prev.length}`,
+                    value: "",
+                    error: null,
+                    saving: false,
+                  },
+                ]);
+              }}
+            >
+              +
+            </Button>
+            {typeof pricePerAddress === "number" && (
+              <p className="text-sm text-black">
+                配信先追加 : ¥{pricePerAddress.toLocaleString()}(月額・税別) /
+                1アドレス毎
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
+    </section>
   );
 }
 
-/** ----------------- util & empty view ----------------- */
-
-function formatCurrency(amount: number, currency?: string) {
-  const c = (currency || "jpy").toLowerCase();
-  const zeroDecimal = new Set(["jpy", "krw"]);
-  const value = zeroDecimal.has(c) ? amount : amount / 100;
-  try {
-    return new Intl.NumberFormat("ja-JP", {
-      style: "currency",
-      currency: (currency || "JPY").toUpperCase(),
-    }).format(value);
-  } catch {
-    return `${value} ${currency?.toUpperCase() || "JPY"}`;
-  }
-}
-
-function formatDateJPLong(iso?: string) {
-  if (!iso) return "終了予定日未定";
-  try {
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return "終了予定日未定";
-    return new Intl.DateTimeFormat("ja-JP", {
-      year: "numeric",
-      month: "long",
-      day: "numeric",
-    }).format(d);
-  } catch {
-    return "終了予定日未定";
-  }
-}
-
-function NoSubscription({ onReset }: { onReset?: () => void }) {
-  return (
-    <div className="space-y-4">
-      <p className="text-gray-700">有料プランの契約がありません。</p>
-      {onReset ? (
-        <Button variant="outline" onClick={onReset} className="w-full">
-          メールアドレス入力に戻る
-        </Button>
-      ) : null}
-    </div>
-  );
-}

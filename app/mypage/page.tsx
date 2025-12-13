@@ -29,6 +29,39 @@ import {
   DialogClose,
 } from "@/components/ui/dialog";
 
+// Utility function to format date in Japanese long format
+function formatDateJPLong(dateString?: string): string {
+  if (!dateString) return "";
+  try {
+    const date = new Date(dateString);
+    return new Intl.DateTimeFormat("ja-JP", {
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+    }).format(date);
+  } catch {
+    return "";
+  }
+}
+
+// Component to display when no subscription is found
+function NoSubscription() {
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-gray-600">
+        現在、有効なサブスクリプションがありません。
+      </p>
+      <div>
+        <script async src="https://js.stripe.com/v3/pricing-table.js"></script>
+        <stripe-pricing-table
+          pricing-table-id="prctbl_1SKADY5wfsh1mLQsvTAi9isM"
+          publishable-key="pk_test_51SEPyP5wfsh1mLQsYLJTHeQWuk8l9iaZgi9NuF81nQZ5b7aQT4THbMxA6Fy5EsKjXN06IaBUoTtGjO3wZirwY0to00PDQybv07"
+        ></stripe-pricing-table>
+      </div>
+    </div>
+  );
+}
+
 const MAX_ADDITIONAL_RECIPIENTS = 10;
 const SESSION_EMAIL_KEY = "mypage:lastEmail:session";
 
@@ -328,7 +361,7 @@ export default function MyPage() {
   return (
     <div className="min-h-screen bg-gray-50 py-8 px-4">
       <div
-        className={`mx-auto ${sub?.is_trialing ? "max-w-5xl" : "max-w-2xl"}`}
+        className={`mx-auto ${sub?.is_trialing ? "max-w-5xl" : "max-w-3xl"}`}
       >
         <div className="mb-8 text-center">
           <h1 className="mb-2 text-3xl font-bold text-gray-900">
@@ -1283,7 +1316,7 @@ function ResolvedView({
                 label="プラン/支払期間の変更"
                 openInNewTab
               />
-              <p className="text-sm text-gray-600">
+              <p className="text-[11px] text-gray-500">
                 プラン変更時には契約者以外のメール配信先が削除されます。
               </p>
             </div>
@@ -1338,9 +1371,8 @@ function RecipientsInlineEditor({
 
   const ownerRecipient = useMemo(
     () =>
-      sortedRecipients.find(
-        (r) => r.email.toLowerCase() === normalizedOwner
-      ) ?? null,
+      sortedRecipients.find((r) => r.email.toLowerCase() === normalizedOwner) ??
+      null,
     [sortedRecipients, normalizedOwner]
   );
 
@@ -1389,11 +1421,7 @@ function RecipientsInlineEditor({
   const allBaseFilled = baseSlots.every((slot) => slot.email.trim().length > 0);
 
   const pricePerAddress =
-    plan === "business"
-      ? 3980
-      : plan === "lite"
-      ? 2980
-      : undefined;
+    plan === "business" ? 3980 : plan === "lite" ? 2980 : undefined;
 
   const canUseInlineEditor = plan === "business" || plan === "lite";
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -1420,9 +1448,7 @@ function RecipientsInlineEditor({
 
   const normalizedExisting = useMemo(() => {
     const set = new Set<string>();
-    sortedRecipients.forEach(
-      (r) => r.email && set.add(r.email.toLowerCase())
-    );
+    sortedRecipients.forEach((r) => r.email && set.add(r.email.toLowerCase()));
     set.add(normalizedOwner);
     return set;
   }, [sortedRecipients, normalizedOwner]);
@@ -1472,7 +1498,9 @@ function RecipientsInlineEditor({
       normalizedExisting.has(lower) &&
       !sortedRecipients
         .filter((r) => r.email.toLowerCase() === lower)
-        .some((r) => r.email.toLowerCase() === baseSlots[index].email.toLowerCase());
+        .some(
+          (r) => r.email.toLowerCase() === baseSlots[index].email.toLowerCase()
+        );
 
     if (duplicateInOtherBase || duplicateExisting) {
       setBaseErrorType((prev) =>
@@ -1601,8 +1629,7 @@ function RecipientsInlineEditor({
                     </span>
                   )}
                   {recipient.email.toLowerCase() !== normalizedOwner &&
-                    (recipient.created_via ?? "").toLowerCase() ===
-                      "addon" && (
+                    (recipient.created_via ?? "").toLowerCase() === "addon" && (
                       <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-600 ring-1 ring-inset ring-gray-200">
                         追加購入
                       </span>
@@ -1620,7 +1647,10 @@ function RecipientsInlineEditor({
     );
   }
 
-  const validateEmailDuplicate = (value: string, ignore?: { baseIndex?: number; addonIndex?: number; newId?: string }) => {
+  const validateEmailDuplicate = (
+    value: string,
+    ignore?: { baseIndex?: number; addonIndex?: number; newId?: string }
+  ) => {
     const trimmed = value.trim();
     if (!trimmed) return null as "invalid" | "duplicate" | null;
     if (!emailRegex.test(trimmed)) return "invalid" as const;
@@ -1652,7 +1682,12 @@ function RecipientsInlineEditor({
       return row.value.trim().toLowerCase() === lower;
     });
 
-    if (duplicateInBase || duplicateExisting || duplicateInAddon || duplicateInNewAddon) {
+    if (
+      duplicateInBase ||
+      duplicateExisting ||
+      duplicateInAddon ||
+      duplicateInNewAddon
+    ) {
       return "duplicate";
     }
     return null;
@@ -1757,7 +1792,11 @@ function RecipientsInlineEditor({
     setNewAddonRows((prev) =>
       prev.map((row) =>
         row.id === id
-          ? { ...row, value, error: validateEmailDuplicate(value, { newId: id }) }
+          ? {
+              ...row,
+              value,
+              error: validateEmailDuplicate(value, { newId: id }),
+            }
           : row
       )
     );
@@ -1806,9 +1845,7 @@ function RecipientsInlineEditor({
             : true;
         if (!ok) {
           setNewAddonRows((prev) =>
-            prev.map((r) =>
-              r.id === id ? { ...r, saving: false } : r
-            )
+            prev.map((r) => (r.id === id ? { ...r, saving: false } : r))
           );
           return;
         }
@@ -1890,13 +1927,20 @@ function RecipientsInlineEditor({
                     handleBaseChange(index, e.target.value);
                   }}
                   placeholder="メールアドレスを入力"
-                  className={`w-full ${
+                  className={`w-full ${slot.type === "owner" ? "pr-20" : ""} ${
                     baseErrorType[index] === "invalid" ||
                     baseErrorType[index] === "duplicate"
                       ? "border-red-500 focus-visible:ring-red-500 placeholder:text-red-400"
                       : ""
                   }`}
                 />
+                {slot.type === "owner" && (
+                  <div className="pointer-events-none absolute inset-y-0 right-2 flex items-center">
+                    <span className="inline-flex items-center rounded-full bg-blue-50 px-3 py-1 text-[11px] font-medium text-blue-700 ring-1 ring-inset ring-blue-200">
+                      契約者
+                    </span>
+                  </div>
+                )}
                 {slot.type === "free" && (
                   <div className="pointer-events-none absolute inset-y-0 right-2 flex items-center">
                     <Button
@@ -1917,8 +1961,8 @@ function RecipientsInlineEditor({
                 )}
               </div>
               {slot.type === "owner" && (
-                <p className="text-[11px] text-black">
-                  契約者のメールアドレスは変更出来ません。
+                <p className="text-[10px] text-gray-500 whitespace-nowrap">
+                  契約者のメールアドレスは変更出来ません
                 </p>
               )}
               {slot.type === "free" && slot.email && (
@@ -1936,13 +1980,13 @@ function RecipientsInlineEditor({
               )}
             </div>
             {baseErrorType[index] === "invalid" && (
-              <p className="text-[11px] text-red-600">
-                メールアドレスの形式が正しくありません。
+              <p className="text-[10px] text-red-600">
+                メールアドレスの形式が正しくありません
               </p>
             )}
             {baseErrorType[index] === "duplicate" && (
-              <p className="text-[11px] text-red-600">
-                メールアドレスが重複しています。
+              <p className="text-[10px] text-red-600">
+                メールアドレスが重複しています
               </p>
             )}
           </div>
@@ -1964,14 +2008,19 @@ function RecipientsInlineEditor({
                       isEditing && handleAddonEditChange(index, e.target.value)
                     }
                     placeholder="メールアドレスを入力"
-                    className={`w-full ${
+                    className={`w-full pr-16 ${
                       error === "invalid" || error === "duplicate"
                         ? "border-red-500 focus-visible:ring-red-500 placeholder:text-red-400"
                         : ""
                     }`}
                   />
-                  {isEditing && (
-                    <div className="pointer-events-none absolute inset-y-0 right-2 flex items-center">
+                  <div className="pointer-events-none absolute inset-y-0 right-2 flex items-center gap-1">
+                    {!isEditing && (
+                      <span className="inline-flex items-center rounded-full border border-gray-300/60 bg-gray-50/60 px-2 py-0.5 text-[11px] text-gray-600/80">
+                        追加分
+                      </span>
+                    )}
+                    {isEditing && (
                       <Button
                         type="button"
                         size="xs"
@@ -1985,23 +2034,18 @@ function RecipientsInlineEditor({
                       >
                         保存
                       </Button>
-                    </div>
-                  )}
+                    )}
+                  </div>
                 </div>
                 <div className="flex items-center gap-2 text-[11px] text-gray-600">
-                  {!isEditing && (
-                    <span className="inline-flex items-center rounded-full border border-gray-300/60 bg-gray-50/60 px-2 py-0.5 text-gray-600/80">
-                      追加分
-                    </span>
-                  )}
                   {!isEditing ? (
                     <>
                       <Button
                         type="button"
-                        variant="outline"
                         size="xs"
                         disabled={editingAddonSaving}
                         onClick={() => handleAddonEditStart(index)}
+                        className="bg-black border-black text-white hover:bg-black/90"
                       >
                         変更
                       </Button>
@@ -2011,6 +2055,7 @@ function RecipientsInlineEditor({
                         size="xs"
                         disabled={editingAddonSaving}
                         onClick={() => handleAddonDelete(index)}
+                        className="text-black"
                       >
                         削除
                       </Button>
@@ -2042,61 +2087,67 @@ function RecipientsInlineEditor({
           );
         })}
 
-        {newAddonRows.map((row) => (
-          <div key={row.id} className="flex flex-col gap-1 text-sm">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
-              <div className="relative w-full sm:w-[70%]">
-                <Input
-                  type="email"
-                  value={row.value}
-                  disabled={row.saving}
-                  onChange={(e) => handleNewAddonChange(row.id, e.target.value)}
-                  placeholder="メールアドレスを入力"
-                  className={`w-full ${
-                    row.error === "invalid" || row.error === "duplicate"
-                      ? "border-red-500 focus-visible:ring-red-500 placeholder:text-red-400"
-                      : ""
-                  }`}
-                />
-                <div className="pointer-events-none absolute inset-y-0 right-2 flex items-center">
-                  <Button
-                    type="button"
-                    size="xs"
-                    className="pointer-events-auto h-6 px-2 text-xs"
-                    disabled={
-                      row.saving || !row.value.trim() || !!row.error
+        {newAddonRows.map((row) => {
+          const isEditing = !!row.value.trim();
+          return (
+            <div key={row.id} className="flex flex-col gap-1 text-sm">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+                <div className="relative w-full sm:w-[70%]">
+                  <Input
+                    type="email"
+                    value={row.value}
+                    disabled={row.saving}
+                    onChange={(e) =>
+                      handleNewAddonChange(row.id, e.target.value)
                     }
-                    onClick={() => handleNewAddonSave(row.id)}
-                  >
-                    保存
-                  </Button>
+                    placeholder="メールアドレスを入力"
+                    className={`w-full pr-16 ${
+                      row.error === "invalid" || row.error === "duplicate"
+                        ? "border-red-500 focus-visible:ring-red-500 placeholder:text-red-400"
+                        : ""
+                    }`}
+                  />
+                  <div className="pointer-events-none absolute inset-y-0 right-2 flex items-center gap-1">
+                    {!isEditing && (
+                      <span className="inline-flex items-center rounded-full border border-gray-300/40 bg-gray-50/40 px-2 py-0.5 text-[11px] text-gray-500/80">
+                        追加分
+                      </span>
+                    )}
+                    {isEditing && (
+                      <Button
+                        type="button"
+                        size="xs"
+                        className="pointer-events-auto h-6 px-2 text-xs"
+                        disabled={
+                          row.saving || !row.value.trim() || !!row.error
+                        }
+                        onClick={() => handleNewAddonSave(row.id)}
+                      >
+                        保存
+                      </Button>
+                    )}
+                  </div>
                 </div>
+                <div className="flex items-center gap-2 text-[11px] text-gray-600"></div>
               </div>
-              <div className="flex items-center gap-2 text-[11px] text-gray-600">
-                <span className="inline-flex items-center rounded-full border border-gray-300/40 bg-gray-50/40 px-2 py-0.5 text-gray-500/80">
-                  追加分
-                </span>
-              </div>
+              {row.error === "invalid" && (
+                <p className="text-[11px] text-red-600">
+                  メールアドレスの形式が正しくありません。
+                </p>
+              )}
+              {row.error === "duplicate" && (
+                <p className="text-[11px] text-red-600">
+                  メールアドレスが重複しています。
+                </p>
+              )}
             </div>
-            {row.error === "invalid" && (
-              <p className="text-[11px] text-red-600">
-                メールアドレスの形式が正しくありません。
-              </p>
-            )}
-            {row.error === "duplicate" && (
-              <p className="text-[11px] text-red-600">
-                メールアドレスが重複しています。
-              </p>
-            )}
-          </div>
-        ))}
+          );
+        })}
 
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3 pt-1">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-4">
             <Button
               type="button"
-              variant="outline"
-              size="sm"
               disabled={!allBaseFilled}
               onClick={() => {
                 if (!allBaseFilled) return;
@@ -2114,7 +2165,7 @@ function RecipientsInlineEditor({
               +
             </Button>
             {typeof pricePerAddress === "number" && (
-              <p className="text-sm text-black">
+              <p className="text-xs text-black">
                 配信先追加 : ¥{pricePerAddress.toLocaleString()}(月額・税別) /
                 1アドレス毎
               </p>
@@ -2125,4 +2176,3 @@ function RecipientsInlineEditor({
     </section>
   );
 }
-

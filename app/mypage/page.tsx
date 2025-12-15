@@ -2028,12 +2028,14 @@ function RecipientsInlineEditor({
                           type="button"
                           size="xs"
                           className="pointer-events-auto h-6 px-2 text-xs"
-                          disabled={
-                            baseSaving[index] || !!baseErrorType[index]
-                          }
+                          disabled={baseSaving[index] || !!baseErrorType[index]}
                           onClick={() => handleBaseSave(index)}
                         >
-                          保存
+                          {baseSaving[index] ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            "保存"
+                          )}
                         </Button>
                       )}
                   </div>
@@ -2064,7 +2066,11 @@ function RecipientsInlineEditor({
                         onClick={() => handleBaseDelete(index)}
                         className="bg-black border-black text-white hover:bg-black/90"
                       >
-                        削除
+                        {baseSaving[index] ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          "削除"
+                        )}
                       </Button>
                     </>
                   ) : (
@@ -2134,7 +2140,11 @@ function RecipientsInlineEditor({
                         }
                         onClick={() => handleAddonEditSave(index)}
                       >
-                        保存
+                        {editingAddonSaving ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          "保存"
+                        )}
                       </Button>
                     )}
                   </div>
@@ -2235,10 +2245,7 @@ function RecipientsInlineEditor({
                 disabled={isConfirming}
               >
                 {isConfirming ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    処理中...
-                  </>
+                  <Loader2 className="h-4 w-4 animate-spin" />
                 ) : (
                   "確定"
                 )}
@@ -2256,6 +2263,8 @@ function RecipientsInlineEditor({
               </DialogTitle>
               <DialogDescription>
                 配信先追加したメールアドレスを削除します。
+                <br />
+                現在のプランも更新されます。
               </DialogDescription>
             </DialogHeader>
             <DialogFooter>
@@ -2270,10 +2279,7 @@ function RecipientsInlineEditor({
                 disabled={editingAddonSaving}
               >
                 {editingAddonSaving ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    削除中...
-                  </>
+                  <Loader2 className="h-4 w-4 animate-spin" />
                 ) : (
                   "確定"
                 )}
@@ -2296,7 +2302,7 @@ function RecipientsInlineEditor({
                       handleNewAddonChange(row.id, e.target.value)
                     }
                     placeholder="メールアドレスを入力"
-                    className={`w-full pr-16 ${
+                    className={`w-full pr-16 focus-visible:ring-0 focus-visible:ring-offset-0 ${
                       row.error === "invalid" || row.error === "duplicate"
                         ? "border-red-500 focus-visible:ring-red-500 placeholder:text-red-400"
                         : ""
@@ -2318,7 +2324,11 @@ function RecipientsInlineEditor({
                         }
                         onClick={() => handleNewAddonSave(row.id)}
                       >
-                        保存
+                        {row.saving ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          "保存"
+                        )}
                       </Button>
                     )}
                   </div>

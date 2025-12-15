@@ -1472,6 +1472,15 @@ function RecipientsInlineEditor({
   };
   const [newAddonRows, setNewAddonRows] = useState<NewAddonRow[]>([]);
 
+  // モーダル確認用の状態
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [pendingSaveId, setPendingSaveId] = useState<string | null>(null);
+  const [modalPriceInfo, setModalPriceInfo] = useState<{
+    freeCount: number;
+    payable: number;
+  } | null>(null);
+  const [isConfirming, setIsConfirming] = useState(false);
+
   const handleBaseChange = (index: number, value: string) => {
     setBaseValues((prev) => prev.map((v, i) => (i === index ? value : v)));
     setBaseDirty((prev) => prev.map((v, i) => (i === index ? true : v)));
@@ -1827,30 +1836,45 @@ function RecipientsInlineEditor({
       const freeCount = remaining > 0 ? 1 : 0;
       const payable = 1 - freeCount;
 
-      // 追加内容の簡易確認
-      try {
-        const ok =
-          typeof window !== "undefined"
-            ? window.confirm(
-                payable > 0
-                  ? `このメールアドレスを追加します。\n無料枠で追加: ${
-                      freeCount > 0 ? "1件" : "0件"
-                    }\n追加購入: 1件（¥${
-                      pricePerAddress
-                        ? pricePerAddress.toLocaleString()
-                        : "3,000"
-                    } / 月・税別）`
-                  : "このメールアドレスを無料枠で追加します。"
-              )
-            : true;
-        if (!ok) {
-          setNewAddonRows((prev) =>
-            prev.map((r) => (r.id === id ? { ...r, saving: false } : r))
-          );
-          return;
-        }
-      } catch {}
+      // モーダルを表示して確認を待つ
+      setPendingSaveId(id);
+      setModalPriceInfo({ freeCount, payable });
+      setShowConfirmModal(true);
 
+      // saving状態を解除（モーダル確認後に再度設定）
+      setNewAddonRows((prev) =>
+        prev.map((r) => (r.id === id ? { ...r, saving: false } : r))
+      );
+    } catch (err) {
+      const msg = "追加に失敗しました。";
+      try {
+        window.alert(msg);
+      } catch {
+        console.error(msg, err);
+      }
+      setNewAddonRows((prev) =>
+        prev.map((r) => (r.id === id ? { ...r, saving: false } : r))
+      );
+    }
+  };
+
+  const executeNewAddonSave = async () => {
+    if (!pendingSaveId) return;
+
+    const row = newAddonRows.find((r) => r.id === pendingSaveId);
+    if (!row) return;
+    const trimmed = row.value.trim();
+    if (!trimmed || row.error) return;
+
+    const freeCount = modalPriceInfo?.freeCount ?? 0;
+    const payable = modalPriceInfo?.payable ?? 0;
+
+    setIsConfirming(true);
+    setNewAddonRows((prev) =>
+      prev.map((r) => (r.id === pendingSaveId ? { ...r, saving: true } : r))
+    );
+
+    try {
       // 1) 無料枠があれば先に free-add
       if (freeCount > 0) {
         const freeRes = await fetch("/api/recipients/free-add", {
@@ -1894,7 +1918,7 @@ function RecipientsInlineEditor({
       }
 
       await onRefetch?.(ownerEmail);
-      setNewAddonRows((prev) => prev.filter((r) => r.id !== id));
+      setNewAddonRows((prev) => prev.filter((r) => r.id !== pendingSaveId));
     } catch (err) {
       const msg = "追加に失敗しました。";
       try {
@@ -1903,8 +1927,14 @@ function RecipientsInlineEditor({
         console.error(msg, err);
       }
       setNewAddonRows((prev) =>
-        prev.map((r) => (r.id === id ? { ...r, saving: false } : r))
+        prev.map((r) => (r.id === pendingSaveId ? { ...r, saving: false } : r))
       );
+    } finally {
+      // モーダルを閉じる
+      setIsConfirming(false);
+      setShowConfirmModal(false);
+      setPendingSaveId(null);
+      setModalPriceInfo(null);
     }
   };
 
@@ -2087,6 +2117,65 @@ function RecipientsInlineEditor({
           );
         })}
 
+        {/* 追加購入確認モーダル */}
+        <Dialog open={showConfirmModal} onOpenChange={setShowConfirmModal}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle className="text-lg font-bold">
+                購入の確認
+              </DialogTitle>
+              <DialogDescription>
+                {modalPriceInfo && modalPriceInfo.payable > 0 ? (
+                  <>
+                    配信先追加 : ¥
+                    {pricePerAddress
+                      ? pricePerAddress.toLocaleString() +
+                        " (月額・税別) / 1アドレス毎"
+                      : "契約情報が正しく取得できませんでした。"}
+                  </>
+                ) : (
+                  "このメールアドレスを追加します。"
+                )}
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setShowConfirmModal(false);
+                  setPendingSaveId(null);
+                  setModalPriceInfo(null);
+                  // saving状態を解除
+                  if (pendingSaveId) {
+                    setNewAddonRows((prev) =>
+                      prev.map((r) =>
+                        r.id === pendingSaveId ? { ...r, saving: false } : r
+                      )
+                    );
+                  }
+                }}
+              >
+                キャンセル
+              </Button>
+              <Button
+                type="button"
+                onClick={executeNewAddonSave}
+                disabled={isConfirming}
+              >
+                {isConfirming ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    処理中...
+                  </>
+                ) : (
+                  "確定"
+                )}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
         {newAddonRows.map((row) => {
           const isEditing = !!row.value.trim();
           return (
@@ -2128,7 +2217,21 @@ function RecipientsInlineEditor({
                     )}
                   </div>
                 </div>
-                <div className="flex items-center gap-2 text-[11px] text-gray-600"></div>
+                <div className="flex items-center gap-2 text-[11px] text-gray-600">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="xs"
+                    disabled={row.saving}
+                    onClick={() => {
+                      setNewAddonRows((prev) =>
+                        prev.filter((r) => r.id !== row.id)
+                      );
+                    }}
+                  >
+                    追加をキャンセルする
+                  </Button>
+                </div>
               </div>
               {row.error === "invalid" && (
                 <p className="text-[11px] text-red-600">

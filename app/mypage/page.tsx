@@ -1442,12 +1442,14 @@ function RecipientsInlineEditor({
   const [baseErrorType, setBaseErrorType] = useState<
     ("invalid" | "duplicate" | null)[]
   >(baseSlots.map(() => null));
+  const [editingBaseIndex, setEditingBaseIndex] = useState<number | null>(null);
 
   useEffect(() => {
     setBaseValues(baseSlots.map((slot) => slot.email));
     setBaseDirty(baseSlots.map(() => false));
     setBaseSaving(baseSlots.map(() => false));
     setBaseErrorType(baseSlots.map(() => null));
+    setEditingBaseIndex(null);
   }, [baseSlots]);
 
   const normalizedExisting = useMemo(() => {
@@ -1568,6 +1570,7 @@ function RecipientsInlineEditor({
 
       // 成功時は最新一覧を再取得して親へ反映
       await onRefetch?.(ownerEmail);
+      setEditingBaseIndex(null);
     } catch (err) {
       // 仕様上はモーダル表示だが、ここでは alert で簡易対応し、あとで専用モーダルに差し替え可能
       const msg =
@@ -1582,6 +1585,31 @@ function RecipientsInlineEditor({
     } finally {
       setBaseSaving((prev) => prev.map((v, i) => (i === index ? false : v)));
     }
+  };
+
+  const handleBaseEditStart = (index: number) => {
+    const slot = baseSlots[index];
+    if (!slot || slot.type !== "free" || !slot.email) return;
+    setEditingBaseIndex(index);
+  };
+
+  const handleBaseEditCancel = () => {
+    if (editingBaseIndex === null) return;
+    const targetIndex = editingBaseIndex;
+    const slot = baseSlots[targetIndex];
+    if (!slot) {
+      setEditingBaseIndex(null);
+      return;
+    }
+
+    setBaseValues((prev) =>
+      prev.map((v, i) => (i === targetIndex ? slot.email : v))
+    );
+    setBaseDirty((prev) => prev.map((v, i) => (i === targetIndex ? false : v)));
+    setBaseErrorType((prev) =>
+      prev.map((v, i) => (i === targetIndex ? null : v))
+    );
+    setEditingBaseIndex(null);
   };
 
   const handleBaseDelete = async (index: number) => {
@@ -1956,13 +1984,28 @@ function RecipientsInlineEditor({
                 <Input
                   type="email"
                   value={baseValues[index] ?? ""}
-                  disabled={slot.type === "owner" || baseSaving[index]}
+                  disabled={
+                    slot.type === "owner" ||
+                    baseSaving[index] ||
+                    (slot.type === "free" &&
+                      !!slot.email &&
+                      editingBaseIndex !== index)
+                  }
                   onChange={(e) => {
                     if (slot.type === "owner") return;
+                    if (
+                      slot.type === "free" &&
+                      slot.email &&
+                      editingBaseIndex !== index
+                    ) {
+                      return;
+                    }
                     handleBaseChange(index, e.target.value);
                   }}
                   placeholder="メールアドレスを入力"
-                  className={`w-full ${slot.type === "owner" ? "pr-20" : ""} ${
+                  className={`w-full focus-visible:ring-0 focus-visible:ring-offset-0 ${
+                    slot.type === "owner" ? "pr-20" : ""
+                  } ${
                     baseErrorType[index] === "invalid" ||
                     baseErrorType[index] === "duplicate"
                       ? "border-red-500 focus-visible:ring-red-500 placeholder:text-red-400"
@@ -1978,20 +2021,21 @@ function RecipientsInlineEditor({
                 )}
                 {slot.type === "free" && (
                   <div className="pointer-events-none absolute inset-y-0 right-2 flex items-center">
-                    <Button
-                      type="button"
-                      size="xs"
-                      className="pointer-events-auto h-6 px-2 text-xs"
-                      disabled={
-                        baseSaving[index] ||
-                        !baseDirty[index] ||
-                        !baseValues[index]?.trim() ||
-                        !!baseErrorType[index]
-                      }
-                      onClick={() => handleBaseSave(index)}
-                    >
-                      保存
-                    </Button>
+                    {(!slot.email || editingBaseIndex === index) &&
+                      baseDirty[index] &&
+                      baseValues[index]?.trim() && (
+                        <Button
+                          type="button"
+                          size="xs"
+                          className="pointer-events-auto h-6 px-2 text-xs"
+                          disabled={
+                            baseSaving[index] || !!baseErrorType[index]
+                          }
+                          onClick={() => handleBaseSave(index)}
+                        >
+                          保存
+                        </Button>
+                      )}
                   </div>
                 )}
               </div>
@@ -2001,16 +2045,39 @@ function RecipientsInlineEditor({
                 </p>
               )}
               {slot.type === "free" && slot.email && (
-                <div className="flex items-center gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="xs"
-                    disabled={baseSaving[index]}
-                    onClick={() => handleBaseDelete(index)}
-                  >
-                    削除
-                  </Button>
+                <div className="flex items-center gap-2 text-[11px] text-gray-600">
+                  {editingBaseIndex !== index ? (
+                    <>
+                      <Button
+                        type="button"
+                        size="xs"
+                        disabled={baseSaving[index]}
+                        onClick={() => handleBaseEditStart(index)}
+                        className="bg-black border-black text-white hover:bg-black/90"
+                      >
+                        変更
+                      </Button>
+                      <Button
+                        type="button"
+                        size="xs"
+                        disabled={baseSaving[index]}
+                        onClick={() => handleBaseDelete(index)}
+                        className="bg-black border-black text-white hover:bg-black/90"
+                      >
+                        削除
+                      </Button>
+                    </>
+                  ) : (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="xs"
+                      disabled={baseSaving[index]}
+                      onClick={handleBaseEditCancel}
+                    >
+                      変更をキャンセルする
+                    </Button>
+                  )}
                 </div>
               )}
             </div>
@@ -2043,7 +2110,7 @@ function RecipientsInlineEditor({
                       isEditing && handleAddonEditChange(index, e.target.value)
                     }
                     placeholder="メールアドレスを入力"
-                    className={`w-full pr-16 ${
+                    className={`w-full pr-16 focus-visible:ring-0 focus-visible:ring-offset-0 ${
                       error === "invalid" || error === "duplicate"
                         ? "border-red-500 focus-visible:ring-red-500 placeholder:text-red-400"
                         : ""

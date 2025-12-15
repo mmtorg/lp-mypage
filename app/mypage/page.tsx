@@ -1366,6 +1366,10 @@ function RecipientsInlineEditor({
   onRecipientsChange,
   onRefetch,
 }: RecipientsInlineEditorProps) {
+  const { toast } = useToast();
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
+  const [addonRecipientToDelete, setAddonRecipientToDelete] =
+    useState<RecipientInfo | null>(null);
   const normalizedOwner = ownerEmail.trim().toLowerCase();
   const baseSlotCount = plan === "business" ? 4 : 1;
 
@@ -1757,18 +1761,13 @@ function RecipientsInlineEditor({
     }
   };
 
-  const handleAddonDelete = async (index: number) => {
-    const target = addonRecipients[index];
-    if (!target) return;
-    try {
-      const ok =
-        typeof window !== "undefined"
-          ? window.confirm("この配信先を削除しますか？")
-          : true;
-      if (!ok) return;
-    } catch {
-      // confirm が使えない環境ではそのまま続行
-    }
+  const handleOpenDeleteDialog = (recipient: RecipientInfo) => {
+    setAddonRecipientToDelete(recipient);
+    setIsDeleteDialogOpen(true);
+  };
+
+  const executeAddonDelete = async () => {
+    if (!addonRecipientToDelete) return;
 
     setEditingAddonSaving(true);
     try {
@@ -1777,7 +1776,7 @@ function RecipientsInlineEditor({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ownerEmail,
-          emails: [target.email],
+          emails: [addonRecipientToDelete.email],
         }),
       });
       if (!res.ok) {
@@ -1785,10 +1784,16 @@ function RecipientsInlineEditor({
         throw new Error(data?.error || "削除に失敗しました。");
       }
       await onRefetch?.(ownerEmail);
+      setIsDeleteDialogOpen(false);
+      setAddonRecipientToDelete(null);
     } catch (err) {
       const msg = "削除に失敗しました。";
       try {
-        window.alert(msg);
+        toast({
+          title: "Error",
+          description: msg,
+          variant: "destructive",
+        });
       } catch {
         console.error(msg, err);
       }
@@ -2081,11 +2086,10 @@ function RecipientsInlineEditor({
                       </Button>
                       <Button
                         type="button"
-                        variant="outline"
                         size="xs"
                         disabled={editingAddonSaving}
-                        onClick={() => handleAddonDelete(index)}
-                        className="text-black"
+                        onClick={() => handleOpenDeleteDialog(recipient)}
+                        className="bg-black border-black text-white hover:bg-black/90"
                       >
                         削除
                       </Button>
@@ -2167,6 +2171,41 @@ function RecipientsInlineEditor({
                   <>
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                     処理中...
+                  </>
+                ) : (
+                  "確定"
+                )}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* 削除確認モーダル */}
+        <Dialog open={isDeleteDialogOpen} onOpenChange={setIsDeleteDialogOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle className="text-lg font-bold">
+                削除の確認
+              </DialogTitle>
+              <DialogDescription>
+                配信先追加したメールアドレスを削除します。
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => setIsDeleteDialogOpen(false)}
+              >
+                キャンセル
+              </Button>
+              <Button
+                onClick={executeAddonDelete}
+                disabled={editingAddonSaving}
+              >
+                {editingAddonSaving ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    削除中...
                   </>
                 ) : (
                   "確定"

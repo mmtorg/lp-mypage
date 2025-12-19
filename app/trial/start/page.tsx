@@ -119,13 +119,15 @@ export default function TrialStartPage() {
   // ---- 成功時の表示 ----
   if (status === "success") {
     return (
-      <main className="mx-auto max-w-2xl p-10 text-center text-[1.1rem] leading-[2rem] space-y-8">
+      <main className="mx-auto max-w-2xl p-10 text-center text-[1.0rem] leading-[2rem] space-y-8">
         <h1 className="text-2xl font-bold mb-12">登録が完了しました！</h1>
 
         <p>
           無料トライアルの30日間、毎朝ニュースをお届けします。
           <br />
-          メール配信は日本時間6:30頃、ミャンマー時間4:00頃です。
+          メール配信は日本時間5:30～8:00頃、ミャンマー時間3:00～5:30頃です。
+          <br />
+          （天災、通信障害、外部サービスの障害等により配信が遅延する場合があります）
         </p>
 
         <section className="bg-gray-50 border border-gray-200 rounded-xl p-8 shadow-sm space-y-8">

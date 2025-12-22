@@ -1,9 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { stripe } from "@/lib/stripe";
 import { supabaseAdmin } from "@/lib/supabase-admin";
-import { getLitePriceIds, getBusinessPriceIds, getAddonPriceIdForBasePriceId, getAddonPriceIdForPlan } from "@/lib/stripe-price-ids";
+import {
+  getLitePriceIds,
+  getBusinessPriceIds,
+  getAddonPriceIdForBasePriceId,
+  getAddonPriceIdForPlan,
+} from "@/lib/stripe-price-ids";
 
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
 
 type Plan = "lite" | "business" | "trial" | null;
 
@@ -19,6 +24,7 @@ type RecipientInfo = {
   email: string;
   created_via: "initial" | "addon" | null;
   pending_removal: boolean;
+  created_at?: string;
 };
 
 function inferItemType(price: any, product: any): "base" | "addon" {
@@ -26,7 +32,11 @@ function inferItemType(price: any, product: any): "base" | "addon" {
     .toString()
     .toLowerCase();
   if (["addon", "add_on", "add-on", "add"].includes(priceType)) return "addon";
-  const rawType = ((product as any)?.metadata?.type ?? (product as any)?.metadata?.category ?? "")
+  const rawType = (
+    (product as any)?.metadata?.type ??
+    (product as any)?.metadata?.category ??
+    ""
+  )
     .toString()
     .toLowerCase();
   if (["addon", "add_on", "add-on", "add"].includes(rawType)) return "addon";
@@ -35,18 +45,24 @@ function inferItemType(price: any, product: any): "base" | "addon" {
 
 async function collectSubscriptionItems(
   sub: any
-): Promise<{ items: PurchasedItem[]; primaryName?: string; primaryPrice?: { unit_amount?: number; currency?: string } }> {
+): Promise<{
+  items: PurchasedItem[];
+  primaryName?: string;
+  primaryPrice?: { unit_amount?: number; currency?: string };
+}> {
   const rawItems: any[] = Array.isArray(sub?.items?.data) ? sub.items.data : [];
   if (!rawItems.length) return { items: [], primaryName: undefined };
 
   const productCache = new Map<string, any>();
   const items: PurchasedItem[] = [];
-  let primaryPrice: { unit_amount?: number; currency?: string } | undefined = undefined;
+  let primaryPrice: { unit_amount?: number; currency?: string } | undefined =
+    undefined;
 
   for (const item of rawItems) {
     const price: any = item?.price ?? {};
     const prodAny = price?.product;
-    const productId: string | undefined = typeof prodAny === "string" ? prodAny : prodAny?.id;
+    const productId: string | undefined =
+      typeof prodAny === "string" ? prodAny : prodAny?.id;
 
     let product: any | undefined = undefined;
     if (productId) {
@@ -54,35 +70,47 @@ async function collectSubscriptionItems(
         product = productCache.get(productId);
       } else {
         try {
-          product = await safeStripeCall(() => stripe.products.retrieve(productId), `products.retrieve:${productId}`);
+          product = await safeStripeCall(
+            () => stripe.products.retrieve(productId),
+            `products.retrieve:${productId}`
+          );
           productCache.set(productId, product);
         } catch (err) {
-          console.warn("[sub-by-email] failed to fetch product", productId, err);
+          console.warn(
+            "[sub-by-email] failed to fetch product",
+            productId,
+            err
+          );
         }
       }
     } else if (prodAny) {
       product = prodAny;
     }
 
-    const quantity = typeof item?.quantity === "number" && !Number.isNaN(item.quantity) ? item.quantity : 1;
+    const quantity =
+      typeof item?.quantity === "number" && !Number.isNaN(item.quantity)
+        ? item.quantity
+        : 1;
     let formattedName =
       (product as any)?.name ??
       price?.nickname ??
-      (typeof price?.product === "string" ? price.product : price?.id ?? "不明な商品");
+      (typeof price?.product === "string"
+        ? price.product
+        : price?.id ?? "不明な商品");
 
     // 金額の付与
     if (price.unit_amount && price.currency) {
       let displayAmount = price.unit_amount;
       // JPYの場合は100で割る必要がない
-      if (price.currency.toLowerCase() !== 'jpy') {
+      if (price.currency.toLowerCase() !== "jpy") {
         displayAmount = price.unit_amount / 100;
       }
 
-      const formatter = new Intl.NumberFormat('ja-JP', {
-        style: 'currency',
+      const formatter = new Intl.NumberFormat("ja-JP", {
+        style: "currency",
         currency: price.currency.toUpperCase(),
         minimumFractionDigits: 0,
-        maximumFractionDigits: price.currency.toLowerCase() === 'jpy' ? 0 : 2,
+        maximumFractionDigits: price.currency.toLowerCase() === "jpy" ? 0 : 2,
       });
       const formattedUnitAmount = formatter.format(displayAmount);
       formattedName = `${formattedName} ${formattedUnitAmount}`;
@@ -93,19 +121,25 @@ async function collectSubscriptionItems(
 
     // 間隔の付与（月額/年額）: アドオンは常に月額表示
     try {
-      const rawInterval = String(price?.recurring?.interval || "").toLowerCase();
-      const suffix = itemType === 'addon'
-        ? ' (月額)'
-        : rawInterval === 'year'
-          ? ' (年額)'
-          : rawInterval === 'month'
-            ? ' (月額)'
-            : '';
+      const rawInterval = String(
+        price?.recurring?.interval || ""
+      ).toLowerCase();
+      const suffix =
+        itemType === "addon"
+          ? " (月額)"
+          : rawInterval === "year"
+          ? " (年額)"
+          : rawInterval === "month"
+          ? " (月額)"
+          : "";
       if (suffix) formattedName = `${formattedName}${suffix}`;
     } catch {}
 
     if (itemType === "base" && !primaryPrice && price.unit_amount) {
-      primaryPrice = { unit_amount: price.unit_amount, currency: price.currency };
+      primaryPrice = {
+        unit_amount: price.unit_amount,
+        currency: price.currency,
+      };
     }
 
     items.push({
@@ -114,9 +148,11 @@ async function collectSubscriptionItems(
       type: itemType,
       price_id: price?.id,
       product_id: productId,
-    });  }
+    });
+  }
 
-  const primaryName = items.find((item) => item.type === "base")?.name ?? items[0]?.name;
+  const primaryName =
+    items.find((item) => item.type === "base")?.name ?? items[0]?.name;
   return { items, primaryName, primaryPrice };
 }
 
@@ -170,14 +206,18 @@ export async function GET(req: NextRequest) {
     const email = (searchParams.get("email") || "").trim();
     const force = searchParams.get("force") === "1";
     const debugMode = searchParams.get("debug") === "1";
-    if (!email) return NextResponse.json({ error: "email is required" }, { status: 400 });
+    if (!email)
+      return NextResponse.json({ error: "email is required" }, { status: 400 });
 
     const ttlSec = Number(process.env.SUBSCRIPTION_CACHE_TTL_SECONDS || 600);
     const now = Date.now();
     const debug: any = debugMode ? { step: "start", email, ttlSec } : undefined;
     if (debugMode) {
       console.log("[sub-by-email] start", { email, ttlSec, force });
-      console.log("[sub-by-email] mappings", { LITE_PRICE_IDS, BUSINESS_PRICE_IDS });
+      console.log("[sub-by-email] mappings", {
+        LITE_PRICE_IDS,
+        BUSINESS_PRICE_IDS,
+      });
     }
 
     // Cache lookup in user_stripe（同一emailで複数行の可能性に対応: lite/business > trial）
@@ -186,20 +226,20 @@ export async function GET(req: NextRequest) {
         .from("user_stripe")
         .select("current_plan, email, updated_at, stripe_customer_id")
         .eq("email", email);
-      const rank = (p: string | null | undefined) => (p === "business" ? 3 : p === "lite" ? 2 : p === "trial" ? 1 : 0);
-      const cached = (cachedRows ?? [])
-        .slice()
-        .sort((a: any, b: any) => {
-          const r = rank(b.current_plan) - rank(a.current_plan);
-          if (r !== 0) return r;
-          const ta = a.updated_at ? new Date(a.updated_at).getTime() : 0;
-          const tb = b.updated_at ? new Date(b.updated_at).getTime() : 0;
-          return tb - ta;
-        })[0];
+      const rank = (p: string | null | undefined) =>
+        p === "business" ? 3 : p === "lite" ? 2 : p === "trial" ? 1 : 0;
+      const cached = (cachedRows ?? []).slice().sort((a: any, b: any) => {
+        const r = rank(b.current_plan) - rank(a.current_plan);
+        if (r !== 0) return r;
+        const ta = a.updated_at ? new Date(a.updated_at).getTime() : 0;
+        const tb = b.updated_at ? new Date(b.updated_at).getTime() : 0;
+        return tb - ta;
+      })[0];
       if (debugMode) debug.cached = cached ?? null;
 
       if (!force && cached?.current_plan) {
-        if (debugMode) console.log("[sub-by-email] hit cache(non-null)", { cached });
+        if (debugMode)
+          console.log("[sub-by-email] hit cache(non-null)", { cached });
         let productName: string | undefined;
         let unit_amount: number | undefined;
         let currency: string | undefined;
@@ -210,10 +250,17 @@ export async function GET(req: NextRequest) {
         try {
           if (cached.stripe_customer_id) {
             const all = await safeStripeCall(
-              () => stripe.subscriptions.list({ customer: cached.stripe_customer_id, status: "all", limit: 10 }),
+              () =>
+                stripe.subscriptions.list({
+                  customer: cached.stripe_customer_id,
+                  status: "all",
+                  limit: 10,
+                }),
               "subscriptions.list"
             );
-            const valids = all.data.filter((s) => VALID_STATUSES.has(String(s.status).toLowerCase()));
+            const valids = all.data.filter((s) =>
+              VALID_STATUSES.has(String(s.status).toLowerCase())
+            );
             let primaryCaptured = false;
             for (const sub of valids) {
               // capture trial end if trialing
@@ -225,12 +272,14 @@ export async function GET(req: NextRequest) {
                   }
                 }
               } catch {}
-              const { items, primaryName, primaryPrice } = await collectSubscriptionItems(sub);
+              const { items, primaryName, primaryPrice } =
+                await collectSubscriptionItems(sub);
               purchasedItems.push(...items);
               if (!primaryCaptured && primaryName) {
                 productName = primaryName;
                 primaryCaptured = true;
-                primaryInterval = sub.items?.data?.[0]?.price?.recurring?.interval;
+                primaryInterval =
+                  sub.items?.data?.[0]?.price?.recurring?.interval;
                 if (primaryPrice) {
                   unit_amount = primaryPrice.unit_amount;
                   currency = primaryPrice.currency;
@@ -240,9 +289,15 @@ export async function GET(req: NextRequest) {
           }
         } catch {}
         try {
-          recipients = await fetchRecipients(cached.stripe_customer_id ?? undefined, cached.email ?? undefined);
+          recipients = await fetchRecipients(
+            cached.stripe_customer_id ?? undefined,
+            cached.email ?? undefined
+          );
         } catch (err) {
-          console.warn("[sub-by-email] failed to fetch recipients (cache)", err);
+          console.warn(
+            "[sub-by-email] failed to fetch recipients (cache)",
+            err
+          );
         }
         const finalPlan: Plan = (cached.current_plan as Plan) ?? null;
         return NextResponse.json({
@@ -263,7 +318,11 @@ export async function GET(req: NextRequest) {
       if (!force && cached?.updated_at) {
         const ageMs = now - new Date(cached.updated_at as any).getTime();
         if (ageMs <= ttlSec * 1000 && cached.current_plan) {
-          if (debugMode) console.log("[sub-by-email] hit cache(non-null)", { ageMs, cached });
+          if (debugMode)
+            console.log("[sub-by-email] hit cache(non-null)", {
+              ageMs,
+              cached,
+            });
           let productName: string | undefined;
           let unit_amount: number | undefined;
           let currency: string | undefined;
@@ -274,10 +333,17 @@ export async function GET(req: NextRequest) {
           try {
             if (cached.stripe_customer_id) {
               const all = await safeStripeCall(
-                () => stripe.subscriptions.list({ customer: cached.stripe_customer_id, status: "all", limit: 10 }),
+                () =>
+                  stripe.subscriptions.list({
+                    customer: cached.stripe_customer_id,
+                    status: "all",
+                    limit: 10,
+                  }),
                 "subscriptions.list"
               );
-              const valids = all.data.filter((s) => VALID_STATUSES.has(String(s.status).toLowerCase()));
+              const valids = all.data.filter((s) =>
+                VALID_STATUSES.has(String(s.status).toLowerCase())
+              );
               let primaryCaptured = false;
               for (const sub of valids) {
                 try {
@@ -288,12 +354,14 @@ export async function GET(req: NextRequest) {
                     }
                   }
                 } catch {}
-                const { items, primaryName, primaryPrice } = await collectSubscriptionItems(sub);
+                const { items, primaryName, primaryPrice } =
+                  await collectSubscriptionItems(sub);
                 purchasedItems.push(...items);
                 if (!primaryCaptured && primaryName) {
                   productName = primaryName;
                   primaryCaptured = true;
-                  primaryInterval = sub.items?.data?.[0]?.price?.recurring?.interval;
+                  primaryInterval =
+                    sub.items?.data?.[0]?.price?.recurring?.interval;
                   if (primaryPrice) {
                     unit_amount = primaryPrice.unit_amount;
                     currency = primaryPrice.currency;
@@ -303,9 +371,15 @@ export async function GET(req: NextRequest) {
             }
           } catch {}
           try {
-            recipients = await fetchRecipients(cached.stripe_customer_id ?? undefined, cached.email ?? undefined);
+            recipients = await fetchRecipients(
+              cached.stripe_customer_id ?? undefined,
+              cached.email ?? undefined
+            );
           } catch (err) {
-            console.warn("[sub-by-email] failed to fetch recipients (cache)", err);
+            console.warn(
+              "[sub-by-email] failed to fetch recipients (cache)",
+              err
+            );
           }
           const finalPlan: Plan = (cached.current_plan as Plan) ?? null;
           return NextResponse.json({
@@ -322,7 +396,10 @@ export async function GET(req: NextRequest) {
               : {}),
           });
         } else if (debugMode) {
-          console.log("[sub-by-email] bypass cache (stale or null)", { ageMs, cachedPlan: cached.current_plan });
+          console.log("[sub-by-email] bypass cache (stale or null)", {
+            ageMs,
+            cachedPlan: cached.current_plan,
+          });
         }
       }
     } catch {}
@@ -342,11 +419,20 @@ export async function GET(req: NextRequest) {
         "[sub-by-email] customers",
         customers.data.map((c) => ({ id: c.id, email: (c as any).email }))
       );
-      if (debug) debug.customers = customers.data.map((c) => ({ id: c.id, email: (c as any).email }));
+      if (debug)
+        debug.customers = customers.data.map((c) => ({
+          id: c.id,
+          email: (c as any).email,
+        }));
     }
     if (!customers.data.length) {
       if (debugMode) console.log("[sub-by-email] no customers found for email");
-      return NextResponse.json({ current_plan: null, email, recipients: [], purchased_items: [] });
+      return NextResponse.json({
+        current_plan: null,
+        email,
+        recipients: [],
+        purchased_items: [],
+      });
     }
 
     // Collect all valid subscriptions (across customers)
@@ -361,11 +447,18 @@ export async function GET(req: NextRequest) {
     let hasTrial = false;
     let is_trialing = false;
     let primaryInterval: string | undefined;
-    let primaryPriceInfo: { unit_amount?: number; currency?: string } | undefined;
+    let primaryPriceInfo:
+      | { unit_amount?: number; currency?: string }
+      | undefined;
     let trialEndSec: number | undefined;
     for (const c of customers.data) {
       const all = await safeStripeCall(
-        () => stripe.subscriptions.list({ customer: c.id, status: "all", limit: 10 }),
+        () =>
+          stripe.subscriptions.list({
+            customer: c.id,
+            status: "all",
+            limit: 10,
+          }),
         "subscriptions.list"
       );
       if (debugMode) {
@@ -374,7 +467,9 @@ export async function GET(req: NextRequest) {
           all.data.map((s) => ({ id: s.id, status: s.status }))
         );
       }
-      const valids = all.data.filter((s) => VALID_STATUSES.has(String(s.status).toLowerCase()));
+      const valids = all.data.filter((s) =>
+        VALID_STATUSES.has(String(s.status).toLowerCase())
+      );
       for (const sub of valids) {
         if (sub.status === "trialing") {
           is_trialing = true;
@@ -397,12 +492,20 @@ export async function GET(req: NextRequest) {
           purchasedItems.push(...described.items);
           if (!hasTrial) {
             if (TRIAL_PRICE_IDS.size > 0) {
-              if (described.items.some((it) => it.price_id && TRIAL_PRICE_IDS.has(it.price_id))) {
+              if (
+                described.items.some(
+                  (it) => it.price_id && TRIAL_PRICE_IDS.has(it.price_id)
+                )
+              ) {
                 hasTrial = true;
               }
             }
             if (!hasTrial && TRIAL_PRODUCT_IDS.size > 0) {
-              if (described.items.some((it) => it.product_id && TRIAL_PRODUCT_IDS.has(it.product_id))) {
+              if (
+                described.items.some(
+                  (it) => it.product_id && TRIAL_PRODUCT_IDS.has(it.product_id)
+                )
+              ) {
                 hasTrial = true;
               }
             }
@@ -417,13 +520,20 @@ export async function GET(req: NextRequest) {
           }
           if (!stripeCustomerIdForLink) {
             const custAny = (sub as any).customer;
-            stripeCustomerIdForLink = typeof custAny === "string" ? custAny : custAny?.id || c.id;
+            stripeCustomerIdForLink =
+              typeof custAny === "string" ? custAny : custAny?.id || c.id;
           }
         } catch {}
       }
     }
     // Decide representative plan for UI (prefer business if any)
-    currentPlan = hasBusiness ? "business" : hasLite ? "lite" : hasTrial ? "trial" : null;
+    currentPlan = hasBusiness
+      ? "business"
+      : hasLite
+      ? "lite"
+      : hasTrial
+      ? "trial"
+      : null;
 
     // Upsert user_stripe (no Supabase Auth) and ensure owner recipient
     let upsertedUserStripeId: number | undefined;
@@ -432,12 +542,13 @@ export async function GET(req: NextRequest) {
         email,
         updated_at: new Date().toISOString(),
       };
-      if (stripeCustomerIdForLink) upsertPayload.stripe_customer_id = stripeCustomerIdForLink;
+      if (stripeCustomerIdForLink)
+        upsertPayload.stripe_customer_id = stripeCustomerIdForLink;
       if (currentPlan) upsertPayload.current_plan = currentPlan;
       // 紐付け対象のサブスクリプションIDがあれば保存
       try {
-        const chosenSubId: string | undefined = (customers?.data ?? [])
-          .flatMap((c) => []) && undefined; // placeholder, set below
+        const chosenSubId: string | undefined =
+          (customers?.data ?? []).flatMap((c) => []) && undefined; // placeholder, set below
       } catch {}
       // We already have the chosen subscription in the loop above; find it again for id
       // For simplicity, re-query one active subscription for the chosen customer
@@ -445,14 +556,22 @@ export async function GET(req: NextRequest) {
       if (stripeCustomerIdForLink) {
         try {
           const all = await safeStripeCall(
-            () => stripe.subscriptions.list({ customer: stripeCustomerIdForLink, status: "all", limit: 10 }),
+            () =>
+              stripe.subscriptions.list({
+                customer: stripeCustomerIdForLink,
+                status: "all",
+                limit: 10,
+              }),
             "subscriptions.list"
           );
-          const chosen = all.data.find((s) => VALID_STATUSES.has(String(s.status).toLowerCase()));
+          const chosen = all.data.find((s) =>
+            VALID_STATUSES.has(String(s.status).toLowerCase())
+          );
           chosenSubscriptionId = chosen?.id ?? undefined;
         } catch {}
       }
-      if (chosenSubscriptionId) upsertPayload.stripe_subscription_id = chosenSubscriptionId;
+      if (chosenSubscriptionId)
+        upsertPayload.stripe_subscription_id = chosenSubscriptionId;
 
       const { data: upserted, error: upErr } = await supabaseAdmin
         .from("user_stripe")
@@ -463,18 +582,16 @@ export async function GET(req: NextRequest) {
     }
 
     if (false && currentPlan && upsertedUserStripeId) {
-      await supabaseAdmin
-        .from("recipient_emails")
-        .upsert(
-          [
-            {
-              email,
-              plan: currentPlan,
-              user_stripe_id: upsertedUserStripeId,
-            },
-          ],
-          { onConflict: "user_stripe_id,email", ignoreDuplicates: true }
-        );
+      await supabaseAdmin.from("recipient_emails").upsert(
+        [
+          {
+            email,
+            plan: currentPlan,
+            user_stripe_id: upsertedUserStripeId,
+          },
+        ],
+        { onConflict: "user_stripe_id,email", ignoreDuplicates: true }
+      );
     }
 
     try {
@@ -489,11 +606,14 @@ export async function GET(req: NextRequest) {
     let unit_amount: number | undefined;
     let currency: string | undefined;
     try {
-      const basePriceId = (purchasedItems.find((it) => it.type === "base")?.price_id || undefined) as string | undefined;
+      const basePriceId = (purchasedItems.find((it) => it.type === "base")
+        ?.price_id || undefined) as string | undefined;
       const addonPriceId =
-        getAddonPriceIdForBasePriceId(basePriceId, { interval: (primaryInterval as any) }) ||
-        ((currentPlan === "lite" || currentPlan === "business")
-          ? getAddonPriceIdForPlan(currentPlan, (primaryInterval as any))
+        getAddonPriceIdForBasePriceId(basePriceId, {
+          interval: primaryInterval as any,
+        }) ||
+        (currentPlan === "lite" || currentPlan === "business"
+          ? getAddonPriceIdForPlan(currentPlan, primaryInterval as any)
           : undefined);
       if (addonPriceId) {
         const price = await stripe.prices.retrieve(addonPriceId);
@@ -502,7 +622,15 @@ export async function GET(req: NextRequest) {
       }
     } catch {}
 
-    if (debugMode) console.log("[sub-by-email] done", { email, currentPlan, productName, unit_amount, currency, purchasedCount: purchasedItems.length });
+    if (debugMode)
+      console.log("[sub-by-email] done", {
+        email,
+        currentPlan,
+        productName,
+        unit_amount,
+        currency,
+        purchasedCount: purchasedItems.length,
+      });
     if (debugMode && debug) {
       debug.valid_statuses = Array.from(VALID_STATUSES.values());
       debug.purchased_items = purchasedItems;
@@ -548,16 +676,27 @@ export async function GET(req: NextRequest) {
   }
 }
 
-async function fetchRecipients(stripeCustomerId?: string, ownerEmail?: string): Promise<RecipientInfo[]> {
+async function fetchRecipients(
+  stripeCustomerId?: string,
+  ownerEmail?: string
+): Promise<RecipientInfo[]> {
   if (!stripeCustomerId && !ownerEmail) return [];
 
   const normalizedOwner = ownerEmail ? ownerEmail.toLowerCase() : null;
   const collected = new Map<string, RecipientInfo>();
 
-  const upsert = (email: string | null | undefined, via: string | null | undefined, pending?: boolean | null) => {
+  const upsert = (
+    email: string | null | undefined,
+    via: string | null | undefined,
+    pending?: boolean | null,
+    createdAt?: string | null
+  ) => {
     if (!email) return;
     const key = email.toLowerCase();
-    const mappedVia = via === "addon" || via === "initial" ? (via as "addon" | "initial") : null;
+    const mappedVia =
+      via === "addon" || via === "initial"
+        ? (via as "addon" | "initial")
+        : null;
     const pendingRemoval = Boolean(pending);
     const existing = collected.get(key);
     if (!existing) {
@@ -565,6 +704,7 @@ async function fetchRecipients(stripeCustomerId?: string, ownerEmail?: string): 
         email,
         created_via: mappedVia,
         pending_removal: pendingRemoval,
+        created_at: createdAt ?? undefined,
       });
       return;
     }
@@ -572,6 +712,7 @@ async function fetchRecipients(stripeCustomerId?: string, ownerEmail?: string): 
       ...existing,
       created_via: existing.created_via ?? mappedVia ?? null,
       pending_removal: existing.pending_removal || pendingRemoval,
+      created_at: existing.created_at ?? createdAt ?? undefined,
     };
     collected.set(key, next);
   };
@@ -586,11 +727,16 @@ async function fetchRecipients(stripeCustomerId?: string, ownerEmail?: string): 
       const ids = (parents ?? []).map((p: any) => p.id);
       const { data, error } = await supabaseAdmin
         .from("recipient_emails")
-        .select("email, created_via, pending_removal")
+        .select("email, created_via, pending_removal, created_at")
         .in("user_stripe_id", ids);
       if (!error) {
         for (const row of data ?? []) {
-          upsert(row?.email ?? null, row?.created_via ?? null, row?.pending_removal ?? null);
+          upsert(
+            row?.email ?? null,
+            row?.created_via ?? null,
+            row?.pending_removal ?? null,
+            row?.created_at ?? null
+          );
         }
       }
     }
@@ -599,11 +745,16 @@ async function fetchRecipients(stripeCustomerId?: string, ownerEmail?: string): 
   if (ownerEmail) {
     const { data, error } = await supabaseAdmin
       .from("recipient_emails")
-      .select("email, created_via, pending_removal")
+      .select("email, created_via, pending_removal, created_at")
       .eq("email", ownerEmail);
     if (!error) {
       for (const row of data ?? []) {
-        upsert(row?.email ?? null, row?.created_via ?? null, row?.pending_removal ?? null);
+        upsert(
+          row?.email ?? null,
+          row?.created_via ?? null,
+          row?.pending_removal ?? null,
+          row?.created_at ?? null
+        );
       }
     }
   }
@@ -616,22 +767,35 @@ async function fetchRecipients(stripeCustomerId?: string, ownerEmail?: string): 
 }
 
 // Simple exponential backoff retry for Stripe 429s
-async function safeStripeCall<T>(fn: () => Promise<T>, label: string, maxRetries = Number(process.env.STRIPE_MAX_429_RETRIES || 2)) {
+async function safeStripeCall<T>(
+  fn: () => Promise<T>,
+  label: string,
+  maxRetries = Number(process.env.STRIPE_MAX_429_RETRIES || 2)
+) {
   const baseDelay = Number(process.env.STRIPE_RETRY_BASE_DELAY_MS || 200);
   let attempt = 0;
-  const retries = isFinite(maxRetries) ? Math.max(0, Math.min(5, maxRetries)) : 2;
-  const base = isFinite(baseDelay) ? Math.max(50, Math.min(2000, baseDelay)) : 200;
+  const retries = isFinite(maxRetries)
+    ? Math.max(0, Math.min(5, maxRetries))
+    : 2;
+  const base = isFinite(baseDelay)
+    ? Math.max(50, Math.min(2000, baseDelay))
+    : 200;
   // eslint-disable-next-line no-constant-condition
   while (true) {
     try {
       return await fn();
     } catch (err: any) {
       const status = err?.statusCode ?? err?.raw?.statusCode;
-      const isRate = status === 429 || err?.code === "rate_limit" || err?.type === "StripeRateLimitError";
+      const isRate =
+        status === 429 ||
+        err?.code === "rate_limit" ||
+        err?.type === "StripeRateLimitError";
       if (isRate && attempt < retries) {
         const jitter = Math.floor(Math.random() * 50);
         const wait = base * Math.pow(2, attempt) + jitter;
-        console.warn(`[stripe-backoff] ${label} 429 retry #${attempt + 1} in ${wait}ms`);
+        console.warn(
+          `[stripe-backoff] ${label} 429 retry #${attempt + 1} in ${wait}ms`
+        );
         await new Promise((r) => setTimeout(r, wait));
         attempt++;
         continue;

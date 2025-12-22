@@ -71,6 +71,7 @@ type RecipientInfo = {
   email: string;
   created_via: "initial" | "addon" | null;
   pending_removal?: boolean;
+  created_at?: string;
 };
 
 type PurchasedItem = {
@@ -1130,6 +1131,13 @@ function ResolvedView({
       const ra = rank(a);
       const rb = rank(b);
       if (ra !== rb) return ra - rb;
+
+      // rank が同じ場合（基本枠同士、または追加購入枠同士）は created_at 昇順
+      if (a.created_at && b.created_at) {
+        const ta = new Date(a.created_at).getTime();
+        const tb = new Date(b.created_at).getTime();
+        if (ta !== tb) return ta - tb;
+      }
       return a.email.localeCompare(b.email);
     });
   }, [recipientList]);
@@ -1261,7 +1269,9 @@ function ResolvedView({
                     className="flex items-center justify-between rounded-md bg-gray-50 px-3 py-2"
                   >
                     <span>{item.name}</span>
-                    <span className="ml-2 text-gray-600">{item.quantity}</span>
+                    <span className="ml-2 text-gray-600">
+                      × {item.quantity}
+                    </span>
                   </li>
                 ))}
               </ul>
@@ -1399,6 +1409,8 @@ function RecipientsInlineEditor({
       }),
     [sortedRecipients]
   );
+
+  const hasAddonRecipients = addonRecipients.length > 0;
 
   const baseSlots = useMemo(() => {
     const slots: { key: string; email: string; type: "owner" | "free" }[] = [];
@@ -2059,19 +2071,21 @@ function RecipientsInlineEditor({
                       >
                         変更
                       </Button>
-                      <Button
-                        type="button"
-                        size="xs"
-                        disabled={baseSaving[index]}
-                        onClick={() => handleBaseDelete(index)}
-                        className="bg-black border-black text-white hover:bg-black/90"
-                      >
-                        {baseSaving[index] ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                        ) : (
-                          "削除"
-                        )}
-                      </Button>
+                      {!hasAddonRecipients && (
+                        <Button
+                          type="button"
+                          size="xs"
+                          disabled={baseSaving[index]}
+                          onClick={() => handleBaseDelete(index)}
+                          className="bg-black border-black text-white hover:bg-black/90"
+                        >
+                          {baseSaving[index] ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            "削除"
+                          )}
+                        </Button>
+                      )}
                     </>
                   ) : (
                     <Button

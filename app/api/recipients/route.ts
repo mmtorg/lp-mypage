@@ -30,6 +30,7 @@ type RecipientRow = {
   created_via: string | null;
   user_stripe_id: number | null;
   pending_removal: boolean | null;
+  created_at?: string;
 };
 
 type UserStripeRow = {
@@ -45,6 +46,7 @@ type RecipientPayload = {
   email: string;
   created_via: "initial" | "addon" | null;
   pending_removal: boolean;
+  created_at?: string;
 };
 
 interface OwnerContext {
@@ -134,7 +136,9 @@ async function fetchRecipientRows(ctx: OwnerContext): Promise<RecipientRow[]> {
   const ids = ctx.userStripeRows.map((r) => r.id);
   const { data, error } = await supabaseAdmin
     .from("recipient_emails")
-    .select("id, email, created_via, pending_removal, user_stripe_id")
+    .select(
+      "id, email, created_via, pending_removal, user_stripe_id, created_at"
+    )
     .in("user_stripe_id", ids);
   if (error) throw error;
   return (data ?? []) as RecipientRow[];
@@ -158,6 +162,7 @@ function toRecipientPayload(
           ? "initial"
           : null,
       pending_removal: Boolean(row.pending_removal),
+      created_at: row.created_at,
     }));
 }
 
@@ -613,9 +618,14 @@ async function adjustStripeForDeletion(
         // nextQty === 0 の場合:
         // 1) サブスクがアドオン専用（= ベース商品が存在しない、または唯一のアイテムがアドオン）の場合は、サブスクリプション自体をキャンセル
         // 2) ベース商品が存在する場合は、アドオン item のみ削除
-        const items: any[] = Array.isArray(sub?.items?.data) ? sub.items.data : [];
-        const hasBaseItem = items.some((it: any) => !ADDON_PRICE_IDS.has(it?.price?.id));
-        const isAddonOnlySubscription = items.length === 1 && items[0]?.id === addonItem.id;
+        const items: any[] = Array.isArray(sub?.items?.data)
+          ? sub.items.data
+          : [];
+        const hasBaseItem = items.some(
+          (it: any) => !ADDON_PRICE_IDS.has(it?.price?.id)
+        );
+        const isAddonOnlySubscription =
+          items.length === 1 && items[0]?.id === addonItem.id;
 
         if (!hasBaseItem && isAddonOnlySubscription) {
           await stripe.subscriptions.cancel(subId);

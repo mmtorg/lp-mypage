@@ -92,6 +92,28 @@ async function fetchRecipientRows(parentIds: number[]): Promise<RecipientRow[]> 
 }
 
 export async function POST(req: NextRequest) {
+  const requestId = `${Date.now().toString(36)}-${Math.random()
+    .toString(36)
+    .slice(2, 8)}`;
+  let logContext: Record<string, unknown> = {
+    requestId,
+    route: "/api/recipients/free-add",
+  };
+
+  const fail = (
+    status: number,
+    body: Record<string, unknown>,
+    details?: Record<string, unknown>
+  ) => {
+    console.error("[free-add] request failed", {
+      ...logContext,
+      status,
+      error: body.error,
+      ...details,
+    });
+    return NextResponse.json({ ...body, request_id: requestId }, { status });
+  };
+
   try {
     const body = (await req.json()) as {
       ownerEmail: string;
@@ -100,36 +122,50 @@ export async function POST(req: NextRequest) {
 
     const ownerEmail = (body?.ownerEmail || "").trim();
     const emails = Array.isArray(body?.emails) ? body.emails : [];
+    logContext = {
+      ...logContext,
+      ownerEmail,
+      requestedEmailCount: emails.length,
+      requestedEmails: emails,
+    };
 
     if (!ownerEmail || !isEmail(ownerEmail)) {
-      return NextResponse.json(
+      return fail(
+        400,
         { error: "所有者のメールアドレスが不正です" },
-        { status: 400 }
+        { ownerEmailPresent: Boolean(ownerEmail) }
       );
     }
     const cleaned = emails
       .map((v) => (typeof v === "string" ? v.trim() : ""))
       .filter((v) => v && isEmail(v));
     if (cleaned.length !== emails.length) {
-      return NextResponse.json(
+      return fail(
+        400,
         { error: "メールアドレスの形式が正しくありません" },
-        { status: 400 }
+        { cleanedEmailCount: cleaned.length }
       );
     }
     if (cleaned.length === 0) {
-      return NextResponse.json({ error: "追加するメールがありません" }, { status: 400 });
+      return fail(400, { error: "追加するメールがありません" });
     }
 
     const ctx = await resolveOwnerContext(ownerEmail);
     if (!ctx.userStripeRows.length) {
-      return NextResponse.json({ error: "契約情報が見つかりませんでした" }, { status: 404 });
+      return fail(404, { error: "契約情報が見つかりませんでした" });
     }
+    logContext = {
+      ...logContext,
+      resolvedPlan: ctx.plan,
+      userStripeIds: ctx.userStripeRows.map((row) => row.id),
+    };
     // 有効プランは lite / business のみ対象
     const plan = ctx.plan;
     if (plan !== "lite" && plan !== "business") {
-      return NextResponse.json(
+      return fail(
+        400,
         { error: "有効なプランがありません（lite / businessのみ追加可能）" },
-        { status: 400 }
+        { resolvedPlan: plan }
       );
     }
 
@@ -143,6 +179,12 @@ export async function POST(req: NextRequest) {
     })[0];
 
     const stripeCustomerId: string | undefined = parent?.stripe_customer_id || undefined;
+    logContext = {
+      ...logContext,
+      parentUserStripeId: parent?.id,
+      stripeCustomerId,
+      stripeSubscriptionId: parent?.stripe_subscription_id,
+    };
 
     // 1) base slots from plan_limits (fallback: lite=1, business=4)
     let baseSlots = 0;
@@ -220,9 +262,16 @@ export async function POST(req: NextRequest) {
     const totalAllowed = baseSlots + addonSlots;
     const remaining = Math.max(0, totalAllowed - usedSlots);
     if (cleaned.length > remaining) {
-      return NextResponse.json(
+      return fail(
+        400,
         { error: `追加可能な残り枠は ${remaining} 件です`, remaining_slots: remaining },
-        { status: 400 }
+        {
+          cleanedEmailCount: cleaned.length,
+          baseSlots,
+          addonSlots,
+          usedSlots,
+          remaining,
+        }
       );
     }
 
@@ -236,9 +285,10 @@ export async function POST(req: NextRequest) {
     for (const em of uniqueEmails) {
       if (!em) continue;
       if (existingSet.has(em)) {
-        return NextResponse.json(
+        return fail(
+          409,
           { error: `既に登録済みのメールがあります: ${em}` },
-          { status: 409 }
+          { duplicateEmail: em }
         );
       }
       const via: "initial" | "addon" = toInsert.length < neededAddonLabels ? "addon" : "initial";
@@ -248,9 +298,10 @@ export async function POST(req: NextRequest) {
     // Safety: ensure initial does not exceed baseSlots
     const initialAdds = toInsert.filter((r) => r.created_via === "initial").length;
     if (initialCount + initialAdds > baseSlots) {
-      return NextResponse.json(
+      return fail(
+        400,
         { error: "無料枠（ベース枠）を超える追加はできません" },
-        { status: 400 }
+        { initialCount, initialAdds, baseSlots }
       );
     }
 
@@ -266,14 +317,23 @@ export async function POST(req: NextRequest) {
       .from("recipient_emails")
       .upsert(rowsToUpsert, { onConflict: "user_stripe_id,email", ignoreDuplicates: true });
     if (upErr) {
-      console.error("[free-add] upsert error", upErr);
-      return NextResponse.json({ error: "配信先の保存に失敗しました" }, { status: 500 });
+      return fail(
+        500,
+        { error: "配信先の保存に失敗しました" },
+        { upsertError: upErr, rowsToUpsert }
+      );
     }
 
     return NextResponse.json({ ok: true, inserted: rowsToUpsert.length });
   } catch (err) {
-    console.error("/api/recipients/free-add error:", err);
-    return NextResponse.json({ error: "サーバーエラー" }, { status: 500 });
+    console.error("[free-add] unhandled error", {
+      ...logContext,
+      error: err,
+    });
+    return NextResponse.json(
+      { error: "サーバーエラー", request_id: requestId },
+      { status: 500 }
+    );
   }
 }
 

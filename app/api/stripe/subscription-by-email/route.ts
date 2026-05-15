@@ -743,6 +743,30 @@ async function fetchRecipients(
   }
 
   if (ownerEmail) {
+    const { data: parents, error: pErr } = await supabaseAdmin
+      .from("user_stripe")
+      .select("id")
+      .eq("email", ownerEmail);
+    if (!pErr && (parents?.length ?? 0) > 0) {
+      const ids = (parents ?? []).map((p: any) => p.id);
+      const { data, error } = await supabaseAdmin
+        .from("recipient_emails")
+        .select("email, created_via, pending_removal, created_at")
+        .in("user_stripe_id", ids);
+      if (!error) {
+        for (const row of data ?? []) {
+          upsert(
+            row?.email ?? null,
+            row?.created_via ?? null,
+            row?.pending_removal ?? null,
+            row?.created_at ?? null
+          );
+        }
+      }
+    }
+  }
+
+  if (ownerEmail) {
     const { data, error } = await supabaseAdmin
       .from("recipient_emails")
       .select("email, created_via, pending_removal, created_at")
